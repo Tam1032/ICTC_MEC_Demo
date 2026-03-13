@@ -1,0 +1,21 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+mlflow.db
+
+# Virtual environments
+.venv
+test
+a2c_mec_offload_tensorboard
+*.zip
+mlruns
+runs
+mec_simulation_data
+tmp
+tensorboard_logdir
+Dual_TimeScale
+tensor_log

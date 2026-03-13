@@ -1,0 +1,4 @@
+# Visualization dependencies
+streamlit
+plotly
+streamlit-plotly-events

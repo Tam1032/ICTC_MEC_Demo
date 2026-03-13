@@ -1,0 +1,30 @@
+[project]
+name = "ictc-mec-project"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "gymnasium[classic-control]>=1.2.0",
+    "ipykernel>=7.2.0",
+    "mlflow>=3.6.0",
+    "numpy>=2.2.6",
+    "pandas>=2.3.1",
+    "plotly>=6.5.2",
+    "stable-baselines3>=2.7.0",
+    "streamlit>=1.53.1",
+    "streamlit-plotly-events>=0.0.6",
+    "tensorboard>=2.20.0",
+    "tensorboardx>=2.6.4",
+    "tianshou",
+    "tqdm>=4.67.1",
+]
+
+[dependency-groups]
+dev = [
+    "matplotlib>=3.10.3",
+    "seaborn>=0.13.2",
+]
+
+[tool.uv.sources]
+tianshou = { git = "https://github.com/thu-ml/tianshou.git", rev = "master" }
