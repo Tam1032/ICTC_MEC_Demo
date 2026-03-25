@@ -24,14 +24,43 @@ def create_network_visualization(_env, seed=42):
     """
     fig = go.Figure()
     
-    # Add cloud center
+    # Add base station center
     fig.add_trace(go.Scatter(
         x=[0], y=[2],
         mode='markers+text',
-        marker=dict(size=30, color='orange'),
-        text=['☁️ Cloud'],
-        textposition='top center',
-        name='Cloud'
+        text=['📡'],
+        textposition='middle center',
+        textfont=dict(size=72, color='#D84315', family='Arial Black'),
+        marker=dict(size=8, color='#D84315', opacity=0.0),
+        name='📡 Base Station',
+        hovertext=['Base Station'],
+        hoverinfo='text',
+        showlegend=True
+    ))
+    
+    # Add cloud above the base station
+    fig.add_trace(go.Scatter(
+        x=[0], y=[5.0],
+        mode='markers+text',
+        text=['☁️'],
+        textposition='middle center',
+        textfont=dict(size=84),
+        marker=dict(size=8, color='#64B5F6', opacity=0.0),
+        name='☁️ Cloud',
+        hovertext=['Cloud'],
+        hoverinfo='text',
+        showlegend=True
+    ))
+    
+    # Connect base station to cloud
+    fig.add_trace(go.Scatter(
+        x=[0, 0], y=[2, 5.2],
+        mode='lines+markers',
+        line=dict(color='orange', width=3, dash='solid'),
+        marker=dict(size=0),
+        name='🔗 Base Station Connection',
+        showlegend=True,
+        hoverinfo='skip'
     ))
     
     # Add edge servers in a circle
@@ -39,14 +68,83 @@ def create_network_visualization(_env, seed=42):
     edge_x = np.cos(angles)
     edge_y = np.sin(angles)
     
+    # Move Edge 2 farther away for better visibility
+    if _env.num_edges > 2:
+        edge_x[0] = edge_x[0] * 0.5  # Scale Edge 0 position to be 0.5x closer
+        edge_x[2] = edge_x[2] * 0.4  # Scale Edge 2 position to be 0.6x closer
+        edge_y[2] = edge_y[2] * 2.0  # Scale Edge 2 position to be 2x farther away
+    
     fig.add_trace(go.Scatter(
         x=edge_x, y=edge_y,
         mode='markers+text',
-        marker=dict(size=20, color='lightblue', line=dict(color='blue', width=2)),
-        text=[f'Edge {i}' for i in range(_env.num_edges)],
-        textposition='bottom center',
-        name='Edge Servers'
+        text=['🖥️' for _ in range(_env.num_edges)],
+        textposition='middle center',
+        textfont=dict(size=50),
+        marker=dict(size=8, color='#9575CD', opacity=0.0),
+        name='🖥️ Edge Servers',
+        hovertext=[f'Edge Server {i}' for i in range(_env.num_edges)],
+        hoverinfo='text',
+        showlegend=True
     ))
+    
+    # Add cached models display on edge servers as circular nodes in a rectangle box
+    model_circle_x = []
+    model_circle_y = []
+    model_circle_texts = []
+    
+    for edge_id, edge in enumerate(_env.edge_servers):
+        if len(edge.cached_models) > 0:
+            # Position cached models in a grid above the edge server
+            cached_models_sorted = sorted(edge.cached_models)
+            num_models = len(cached_models_sorted)
+            
+            # Calculate grid dimensions (arrange in rows of max 4 models)
+            models_per_row = min(4, num_models)
+            num_rows = (num_models + models_per_row - 1) // models_per_row
+            
+            # Rectangle dimensions and position
+            box_width = models_per_row * 0.025
+            box_height = num_rows * 0.5
+            box_x = edge_x[edge_id]
+            box_y = edge_y[edge_id] + 0.9 + (box_height / 2)
+            
+            # Draw rectangle box above edge server
+            fig.add_shape(
+                type='rect',
+                x0=box_x - box_width/2, y0=box_y - box_height/2,
+                x1=box_x + box_width/2, y1=box_y + box_height/2,
+                line=dict(color='#4A90E2', width=2),
+                fillcolor='rgba(74, 144, 226, 0.1)',
+                layer='below'
+            )
+            
+            # Add model circles in grid pattern inside the box
+            for model_idx, model_id in enumerate(cached_models_sorted):
+                row = model_idx // models_per_row
+                col = model_idx % models_per_row
+                
+                # Position inside the grid
+                model_x = box_x - (box_width / 2) + ((col + 0.5) * (box_width / models_per_row))
+                model_y = box_y + (box_height / 2) - 0.25 - (row * 0.5)
+                
+                model_circle_x.append(model_x)
+                model_circle_y.append(model_y)
+                model_circle_texts.append(str(model_id))
+    
+    # Add cached models as circular markers with text inside
+    if model_circle_x:
+        fig.add_trace(go.Scatter(
+            x=model_circle_x, y=model_circle_y,
+            mode='markers+text',
+            marker=dict(size=18, color='#4A90E2', line=dict(color='#2E5C8A', width=2)),
+            text=model_circle_texts,
+            textposition='middle center',
+            textfont=dict(size=9, color='white', family='Arial Black'),
+            name='Cached Models',
+            showlegend=True,
+            hovertext=[f'Model {m}' for m in model_circle_texts],
+            hoverinfo='text'
+        ))
     
     # Add mobile devices (sampled) with deterministic positioning
     if _env.num_devices <= 20:
@@ -58,22 +156,113 @@ def create_network_visualization(_env, seed=42):
     rng = np.random.default_rng(seed)
     device_indices = rng.choice(_env.num_devices, min(device_sample_size, _env.num_devices), replace=False)
     
+    # Group devices by their edge server for better layout
+    devices_by_edge = {i: [] for i in range(_env.num_edges)}
     for dev_idx in device_indices:
         dev = _env.mobile_devices[dev_idx]
-        edge_id = dev.edge_id
+        devices_by_edge[dev.edge_id].append(dev_idx)
+    
+    # Separate devices into two groups: with tasks and without tasks
+    devices_with_tasks = []
+    devices_without_tasks = []
+    devices_with_tasks_coords = []
+    devices_without_tasks_coords = []
+    
+    # Position devices around each edge server without overlap
+    for edge_id, edge_devices in devices_by_edge.items():
+        # Get the actual position of this edge server (using the scaled positions from edge_x, edge_y)
+        edge_pos_x = edge_x[edge_id]
+        edge_pos_y = edge_y[edge_id]
         
-        # Place device near its associated edge with deterministic positioning
-        angle = angles[edge_id]
-        x = 1.5 * np.cos(angle) + rng.standard_normal() * 0.2
-        y = 1.5 * np.sin(angle) + rng.standard_normal() * 0.2
-        
+        for pos_idx, dev_idx in enumerate(edge_devices):
+            # Arrange devices in a tight circle around the edge server
+            # Devices are evenly distributed by angle to prevent overlap
+            device_angle = (pos_idx * 2 * np.pi) / max(len(edge_devices), 1)
+            
+            # Tight clustering distance so devices group clearly around their edge server
+            device_distance = 0.5
+            
+            # Position relative to the edge server's actual position
+            x = edge_pos_x + 0.15 * device_distance * np.cos(device_angle)
+            y = edge_pos_y + 3.5 * device_distance * np.sin(device_angle) - 3  # Shift devices above edge servers for better visibility
+            
+            # Check if THIS DEVICE has active tasks in the current step
+            has_tasks = dev_idx in st.session_state.devices_with_tasks
+            
+            if has_tasks:
+                devices_with_tasks.append(dev_idx)
+                devices_with_tasks_coords.append((x, y))
+            else:
+                devices_without_tasks.append(dev_idx)
+                devices_without_tasks_coords.append((x, y))
+    
+    # Add devices WITHOUT tasks (green)
+    if devices_without_tasks_coords:
+        x_coords = [coord[0] for coord in devices_without_tasks_coords]
+        y_coords = [coord[1] for coord in devices_without_tasks_coords]
         fig.add_trace(go.Scatter(
-            x=[x], y=[y],
-            mode='markers',
-            marker=dict(size=8, color='green'),
-            name='Mobile Devices' if dev_idx == device_indices[0] else '',
-            showlegend=bool(dev_idx == device_indices[0]),
-            hovertext=f'Device {dev_idx}',
+            x=x_coords, y=y_coords,
+            mode='markers+text',
+            marker=dict(size=24, color='#2E7D32', line=dict(color='#1B5E20', width=1), symbol='circle', opacity=0.5),
+            text=['📱'] * len(devices_without_tasks),
+            textposition='middle center',
+            textfont=dict(size=16),
+            name='📱 Mobile Devices (Idle)',
+            showlegend=True,
+            hovertext=[f'Device {idx}' for idx in devices_without_tasks],
+            hoverinfo='text'
+        ))
+    
+    # Add devices WITH tasks (yellow)
+    if devices_with_tasks_coords:
+        x_coords = [coord[0] for coord in devices_with_tasks_coords]
+        y_coords = [coord[1] for coord in devices_with_tasks_coords]
+        fig.add_trace(go.Scatter(
+            x=x_coords, y=y_coords,
+            mode='markers+text',
+            marker=dict(size=24, color='#FFFF00', line=dict(color='#FFA500', width=1), symbol='circle', opacity=0.5),
+            text=['⚡'] * len(devices_with_tasks),
+            textposition='middle center',
+            textfont=dict(size=16, color='#FF6B00'),
+            name='⚡ Mobile Devices (Generating Tasks)',
+            showlegend=True,
+            hovertext=[f'Device {idx}' for idx in devices_with_tasks],
+            hoverinfo='text'
+        ))
+    
+    # Add task rectangles above devices with tasks
+    task_x_positions = []
+    task_y_positions = []
+    task_texts = []
+    
+    for coord_idx, (dev_x, dev_y) in enumerate(devices_with_tasks_coords):
+        dev_idx = devices_with_tasks[coord_idx]
+        dev = _env.mobile_devices[dev_idx]
+        if hasattr(dev, 'assigned_tasks') and isinstance(dev.assigned_tasks, list) and len(dev.assigned_tasks) > 0:
+            # Display tasks above the device
+            for task_idx, task in enumerate(dev.assigned_tasks[:3]):  # Show max 3 tasks
+                # Position tasks in a row above the device
+                # Spread them out horizontally: -0.4, 0, +0.4 for better separation
+                task_x = dev_x #+ (task_idx - 1) * 0.4
+                task_y = dev_y + 0.5  # Place tasks well above device to avoid overlap
+                task_x_positions.append(task_x)
+                task_y_positions.append(task_y)
+                # task.task_type represents the DNN model type (can be 1, 2, 3, etc.)
+                task_type = getattr(task, 'task_type', 'Unknown')
+                task_type_id = _env.task_types.index(task_type) if task_type in _env.task_types else 'Unknown'
+                task_texts.append(str(task_type_id))
+    
+    if task_x_positions:
+        fig.add_trace(go.Scatter(
+            x=task_x_positions, y=task_y_positions,
+            mode='markers+text',
+            marker=dict(size=18, color='#FF6B00', symbol='square', line=dict(color='#CC5500', width=2)),
+            text=task_texts,
+            textposition='middle center',
+            textfont=dict(size=11, color='white', family='Arial Black'),
+            name='Tasks',
+            showlegend=False,
+            hovertext=[f'Task Type {t}' for t in task_texts],
             hoverinfo='text'
         ))
     
@@ -81,21 +270,25 @@ def create_network_visualization(_env, seed=42):
     for i in range(_env.num_edges):
         fig.add_trace(go.Scatter(
             x=[edge_x[i], 0], y=[edge_y[i], 2],
-            mode='lines',
-            line=dict(color='gray', width=1),
-            name='Cloud Link' if i == 0 else '',
+            mode='lines+markers',
+            line=dict(color='gray', width=2),
+            marker=dict(size=0),
+            name='🔗 Cloud Link' if i == 0 else '',
             showlegend=bool(i == 0),
             hoverinfo='skip'
         ))
     
     fig.update_layout(
-        title="Network Topology",
+        #title="Network Topology",
+        #titlefont=dict(size=20),
         showlegend=True,
         hovermode='closest',
-        margin=dict(b=20, l=5, r=5, t=40),
+        margin=dict(b=40, l=5, r=5, t=150),
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        height=500
+        height=1200,
+        font=dict(size=40),
+        legend=dict(font=dict(size=14), x=0.75, y=1.25)
     )
     
     return fig
@@ -410,6 +603,9 @@ if 'env' not in st.session_state:
     st.session_state.fast_step_in_slow = 0  # Track which fast step we're on within the slow episode
     st.session_state.prev_cache_hits = 0
     st.session_state.prev_total_requests = 0
+    st.session_state.devices_with_tasks = set()  # Track which devices have active tasks
+    st.session_state.device_inspected = False  # Track if we've inspected device structure yet
+    st.session_state.show_edge_details = False  # Toggle for edge server details panel
 
 # Sidebar for configuration
 st.sidebar.header("⚙️ Configuration")
@@ -560,10 +756,17 @@ with st.sidebar:
             
             # Also keep base environment obs for visualization
             st.session_state.current_obs = st.session_state.dual_env.reset()
+            
+            # Reset all device tasks
+            for dev in st.session_state.env.mobile_devices:
+                if hasattr(dev, 'reset_tasks'):
+                    dev.reset_tasks()
+            
             st.session_state.env_initialized = True
             st.session_state.step_count = 0
             st.session_state.prev_cache_hits = 0
             st.session_state.prev_total_requests = 0
+            st.session_state.devices_with_tasks = set()
             st.session_state.metrics_history = init_metrics_history()
             st.success("✅ Environment initialized successfully!")
         except Exception as e:
@@ -576,6 +779,54 @@ with st.sidebar:
 if not st.session_state.env_initialized:
     st.info("👈 Please configure and initialize the environment from the sidebar.")
 else:
+    # ==================== NETWORK ARCHITECTURE (Top) ====================
+    col_title, col_toggle = st.columns([4, 1])
+    
+    with col_title:
+        st.subheader("🌐 Network Architecture")
+    
+    with col_toggle:
+        st.session_state.show_edge_details = st.checkbox(
+            "Show Edge Details",
+            value=st.session_state.show_edge_details,
+            key="edge_details_toggle"
+        )
+    
+    if st.session_state.show_edge_details:
+        col_viz, col_status = st.columns([3, 1])
+    else:
+        col_viz = st.container()
+    
+    with col_viz:
+        # Create network visualization with stable positioning
+        fig_network = create_network_visualization(st.session_state.env, seed=42)
+        st.plotly_chart(fig_network, use_container_width=True, key="network_topology", height=1000)
+    
+    if st.session_state.show_edge_details:
+        with col_status:
+            with st.expander("🖥️ Edge Server Details", expanded=False):
+                for edge_id, edge in enumerate(st.session_state.env.edge_servers):
+                    with st.expander(f"Edge {edge_id} ({len(edge.cached_models)} models)", expanded=False):
+                        col_c1, col_c2 = st.columns(2)
+                        with col_c1:
+                            st.metric("Computing Power", f"{edge.computing_power/1e9:.2f} GHz")
+                            st.metric("Cached Models", len(edge.cached_models))
+                        with col_c2:
+                            st.metric("Bandwidth", f"{edge.bandwidth/1e6:.2f} MHz")
+                            st.metric("Cache Hits", edge.cache_hits)
+                        
+                        st.metric("Total Requests", edge.total_requests)
+                        if edge.total_requests > 0:
+                            hit_rate = (edge.cache_hits / edge.total_requests) * 100
+                            st.metric("Cache Hit Rate", f"{hit_rate:.2f}%")
+                        else:
+                            st.info("No requests yet")
+                        
+                        if len(edge.cached_models) > 0:
+                            st.write(f"**Cached Model IDs:** {sorted(edge.cached_models)}")
+    
+    st.divider()
+    
     # ==================== CONTROL PANEL (Always Visible) ====================
     st.subheader("⚙️ Simulation Controls")
     
@@ -597,6 +848,11 @@ else:
                 print(f"  Slow obs type: {type(st.session_state.slow_obs)}"
                       f", Fast obs type: {type(st.session_state.fast_obs)}")
                 
+                # Reset assigned tasks on all devices BEFORE the step
+                for dev in st.session_state.env.mobile_devices:
+                    if hasattr(dev, 'reset_tasks'):
+                        dev.reset_tasks()
+                
                 # Get dual-timescale actions using wrapped environment observations
                 slow_obs, fast_obs, info, fast_action, made_slow_decision = create_dual_actions(
                     st.session_state.slow_env,
@@ -617,6 +873,26 @@ else:
                 st.session_state.current_obs = fast_obs
                 st.session_state.step_count += 1
                 st.session_state.fast_step_in_slow = (st.session_state.fast_step_in_slow + 1) % large_timescale_size
+                
+                # Collect devices that have tasks (already populated by step)
+                st.session_state.devices_with_tasks = set()
+                for dev_idx, dev in enumerate(st.session_state.env.mobile_devices):
+                    # Check if device has assigned tasks
+                    has_tasks = (hasattr(dev, 'assigned_tasks') and 
+                                 isinstance(dev.assigned_tasks, list) and 
+                                 len(dev.assigned_tasks) > 0)
+                    
+                    if has_tasks:
+                        st.session_state.devices_with_tasks.add(dev_idx)
+                
+                # Debug: print comprehensive info
+                num_total_devices = len(st.session_state.env.mobile_devices)
+                print(f"\n=== STEP {st.session_state.step_count} DEBUG ===")
+                print(f"Total devices in environment: {num_total_devices}")
+                print(f"Devices with tasks detected: {len(st.session_state.devices_with_tasks)}")
+                print(f"Device indices with tasks: {sorted(st.session_state.devices_with_tasks)}")
+                print(f"info['num_tasks'] from environment: {info.get('num_tasks', 'N/A')}")
+                print(f"================================\n")
                 
                 # Extract metrics from the info dict (ground truth from environment)
                 # Only collect metrics when there are actual tasks (matching experiment_utils)
@@ -658,10 +934,18 @@ else:
                 st.session_state.slow_obs, _ = st.session_state.slow_env.reset()
                 st.session_state.fast_obs, _ = st.session_state.fast_env.reset()
                 st.session_state.current_obs = st.session_state.dual_env.reset()
+                
+                # Reset all device tasks
+                for dev in st.session_state.env.mobile_devices:
+                    if hasattr(dev, 'reset_tasks'):
+                        dev.reset_tasks()
+                
                 st.session_state.step_count = 0
                 st.session_state.fast_step_in_slow = 0
                 st.session_state.prev_cache_hits = 0
                 st.session_state.prev_total_requests = 0
+                st.session_state.devices_with_tasks = set()
+                st.session_state.device_inspected = False
                 st.session_state.metrics_history = init_metrics_history()
                 st.rerun()
             except Exception as e:
@@ -672,6 +956,7 @@ else:
         if st.button("⚡ Run Multiple Steps", use_container_width=True, key="auto_btn"):
             try:
                 progress_bar = st.progress(0)
+                status_text = st.empty()
                 large_timescale_size = st.session_state.dual_env.base_env.large_timescale_size
                 
                 # Verify session state is ready
@@ -682,7 +967,14 @@ else:
                 # Determine if using pretrained models
                 slow_agent_type = "RL" if isinstance(st.session_state.slow_agent, A2C) else "Random"
                 
+                caching_decisions = 0
+                
                 for i in range(num_auto_steps):
+                    # Reset assigned tasks on all devices BEFORE the step
+                    for dev in st.session_state.env.mobile_devices:
+                        if hasattr(dev, 'reset_tasks'):
+                            dev.reset_tasks()
+                    
                     # Get dual-timescale actions using wrapped environment observations
                     slow_obs, fast_obs, info, fast_action, made_slow_decision = create_dual_actions(
                         st.session_state.slow_env,
@@ -695,6 +987,9 @@ else:
                         slow_agent_type=slow_agent_type
                     )
                     
+                    if made_slow_decision:
+                        caching_decisions += 1
+                    
                     # Update wrapped observations
                     st.session_state.slow_obs = slow_obs
                     st.session_state.fast_obs = fast_obs
@@ -703,6 +998,17 @@ else:
                     st.session_state.current_obs = fast_obs
                     st.session_state.step_count += 1
                     st.session_state.fast_step_in_slow = (st.session_state.fast_step_in_slow + 1) % large_timescale_size
+                    
+                    # Collect devices that have tasks (already populated by step)
+                    st.session_state.devices_with_tasks = set()
+                    for dev_idx, dev in enumerate(st.session_state.env.mobile_devices):
+                        # Check if device has assigned tasks
+                        has_tasks = (hasattr(dev, 'assigned_tasks') and 
+                                     isinstance(dev.assigned_tasks, list) and 
+                                     len(dev.assigned_tasks) > 0)
+                        
+                        if has_tasks:
+                            st.session_state.devices_with_tasks.add(dev_idx)
                     
                     # Extract metrics from the info dict (ground truth from environment)
                     # Only collect metrics when there are actual tasks (matching experiment_utils)
@@ -728,6 +1034,7 @@ else:
                         st.session_state.metrics_history['total_tasks_completed'] += task_count
                     
                     progress_bar.progress((i + 1) / num_auto_steps)
+                    status_text.text(f"Step {i+1}/{num_auto_steps} - Caching decisions made: {caching_decisions}")
                 st.success(f"✅ Completed {num_auto_steps} steps!")
             except Exception as e:
                 st.error(f"❌ Error running steps: {str(e)}")
@@ -738,7 +1045,7 @@ else:
     st.divider()
     
     # Create tabs for different views
-    tab1, tab2, tab3, tab4 = st.tabs(["🎯 Environment State", "📊 Real-time Metrics", "📈 History", "📊 Average Results"])
+    tab1, tab2 = st.tabs(["🎯 Environment State", "📊 Metrics"])
     
     with tab1:
         st.subheader("Current Environment Status")
@@ -755,20 +1062,9 @@ else:
         
         st.divider()
         
-        # Network Architecture Visualization
-        st.subheader("🌐 Network Architecture")
-        
-        col_vis1, col_vis2 = st.columns([2, 1])
-        
-        with col_vis1:
-            # Create network visualization with stable positioning
-            fig_network = create_network_visualization(st.session_state.env, seed=42)
-            st.plotly_chart(fig_network, use_container_width=True, key="network_topology")
-        
-        with col_vis2:
-            st.subheader("🖥️ Edge Server Status")
-            for edge_id, edge in enumerate(st.session_state.env.edge_servers):
-                with st.expander(f"Edge Server {edge_id} ({len(edge.cached_models)} models cached)", expanded=False):
+        st.subheader("🖥️ Edge Server Status")
+        for edge_id, edge in enumerate(st.session_state.env.edge_servers):
+            with st.expander(f"Edge Server {edge_id} ({len(edge.cached_models)} models cached)", expanded=False):
                     col_edge1, col_edge2 = st.columns(2)
                     with col_edge1:
                         st.metric("Computing Power", f"{edge.computing_power/1e9:.2f} GHz")
@@ -786,43 +1082,6 @@ else:
                     
                     if len(edge.cached_models) > 0:
                         st.write(f"**Cached Model IDs:** {sorted(edge.cached_models)}")
-
-        
-        st.divider()
-        
-        # Task and Processing Information
-        col_task1, col_task2 = st.columns(2)
-        
-        with col_task1:
-            st.subheader("📋 Observation Details")
-            if st.session_state.current_obs:
-                obs_data = st.session_state.current_obs
-                
-                # Display available observation keys
-                st.write("**Available Observation Keys:**")
-                st.write(", ".join(obs_data.keys()) if isinstance(obs_data, dict) else "Observation is not a dictionary")
-                
-                # Display each key safely
-                if isinstance(obs_data, dict):
-                    for key, value in obs_data.items():
-                        try:
-                            if isinstance(value, np.ndarray):
-                                st.write(f"**{key}:** shape {value.shape}, dtype {value.dtype}")
-                                if value.size <= 20:  # Only display small arrays
-                                    st.dataframe(pd.DataFrame(value))
-                            elif isinstance(value, list):
-                                st.write(f"**{key}:** {value}")
-                            else:
-                                st.write(f"**{key}:** {value}")
-                        except Exception as e:
-                            st.write(f"**{key}:** (could not display - {type(value).__name__})")
-        
-        with col_task2:
-            st.subheader("💾 Cache Information")
-            
-            # Create cache status visualization
-            fig_cache = create_cache_visualization(st.session_state.env)
-            st.plotly_chart(fig_cache, use_container_width=True, key="cache_status")
     
     with tab2:
         st.subheader("📊 Real-time Metrics")
@@ -855,145 +1114,9 @@ else:
             with col_m7:
                 st.metric("💾 Latest Cache Hit Rate", 
                          f"{st.session_state.metrics_history['cache_hit_rate'][-1]:.2%}")
-        
         st.divider()
         
-        # Metrics visualization
-        col_met1, col_met2 = st.columns(2)
-        
-        with col_met1:
-            fig_reward = create_metrics_plot(
-                st.session_state.metrics_history,
-                'total_reward',
-                'Cumulative Reward Over Time',
-                'Timestep',
-                'Reward'
-            )
-            st.plotly_chart(fig_reward, use_container_width=True, key="reward_chart")
-        
-        with col_met2:
-            fig_accuracy = create_metrics_plot(
-                st.session_state.metrics_history,
-                'avg_accuracy',
-                'Average Accuracy Over Time',
-                'Timestep',
-                'Accuracy'
-            )
-            st.plotly_chart(fig_accuracy, use_container_width=True, key="accuracy_chart")
-        
-        col_met3, col_met4 = st.columns(2)
-        
-        with col_met3:
-            fig_latency = create_metrics_plot(
-                st.session_state.metrics_history,
-                'avg_latency',
-                'Average Latency Over Time',
-                'Timestep',
-                'Latency (ms)'
-            )
-            st.plotly_chart(fig_latency, use_container_width=True, key="latency_chart")
-        
-        with col_met4:
-            fig_cache = create_metrics_plot(
-                st.session_state.metrics_history,
-                'cache_hit_rate',
-                'Cache Hit Rate Over Time',
-                'Timestep',
-                'Cache Hit Rate'
-            )
-            st.plotly_chart(fig_cache, use_container_width=True, key="cache_hit_rate_chart")
-    
-    with tab3:
-        st.subheader("📈 Performance History")
-        
-        if len(st.session_state.metrics_history['timestep']) > 0:
-            # Create comprehensive history dataframe
-            history_df = pd.DataFrame({
-                'Timestep': st.session_state.metrics_history['timestep'],
-                'Total Reward': st.session_state.metrics_history['total_reward'],
-                'Avg Accuracy': st.session_state.metrics_history['avg_accuracy'],
-                'Avg Latency (ms)': st.session_state.metrics_history['avg_latency'],
-                'Waiting Time (ms)': st.session_state.metrics_history['avg_waiting_time'],
-                'Processing Time (ms)': st.session_state.metrics_history['avg_processing_time'],
-                'Transmit Time (ms)': st.session_state.metrics_history['avg_transmit_latency'],
-                'Cache Hit Rate': st.session_state.metrics_history['cache_hit_rate'],
-                'Num Tasks': st.session_state.metrics_history['num_tasks']
-            })
-            
-            st.dataframe(history_df, use_container_width=True, height=400)
-            
-            # Download history as CSV
-            csv = history_df.to_csv(index=False)
-            st.download_button(
-                label="📥 Download History as CSV",
-                data=csv,
-                file_name="mec_metrics_history.csv",
-                mime="text/csv"
-            )
-            
-            # Summary statistics
-            st.subheader("Summary Statistics")
-            
-            # Calculate weighted averages for consistency
-            total_tasks = st.session_state.metrics_history['total_tasks_completed']
-            w_avg_accuracy = st.session_state.metrics_history['total_accuracy_weighted'] / total_tasks if total_tasks > 0 else 0.0
-            w_avg_latency = st.session_state.metrics_history['total_latency'] / total_tasks if total_tasks > 0 else 0.0
-            w_avg_waiting = st.session_state.metrics_history['total_waiting_time'] / total_tasks if total_tasks > 0 else 0.0
-            w_avg_processing = st.session_state.metrics_history['total_processing_time'] / total_tasks if total_tasks > 0 else 0.0
-            w_avg_transmit = st.session_state.metrics_history['total_transmit_latency'] / total_tasks if total_tasks > 0 else 0.0
-            
-            col_stat1, col_stat2 = st.columns(2)
-            
-            with col_stat1:
-                st.write("**Reward Statistics**")
-                st.write(f"Min: {min(st.session_state.metrics_history['total_reward']):.4f}")
-                st.write(f"Max: {max(st.session_state.metrics_history['total_reward']):.4f}")
-                st.write(f"Mean: {np.mean(st.session_state.metrics_history['total_reward']):.4f}")
-            
-            with col_stat2:
-                st.write("**Accuracy Statistics**")
-                st.write(f"Min: {min(st.session_state.metrics_history['avg_accuracy']):.4f}")
-                st.write(f"Max: {max(st.session_state.metrics_history['avg_accuracy']):.4f}")
-                st.write(f"Weighted Mean: {w_avg_accuracy:.4f}")
-
-            st.write("---")
-            col_stat3, col_stat4, col_stat5, col_stat6 = st.columns(4)
-            
-            with col_stat3:
-                st.write("**Total Latency (ms)**")
-                st.write(f"Min: {min(st.session_state.metrics_history['avg_latency']):.4f}")
-                st.write(f"Max: {max(st.session_state.metrics_history['avg_latency']):.4f}")
-                st.write(f"Weighted Mean: {w_avg_latency:.4f}")
-            
-            with col_stat4:
-                st.write("**Waiting Time (ms)**")
-                st.write(f"Min: {min(st.session_state.metrics_history['avg_waiting_time']):.4f}")
-                st.write(f"Max: {max(st.session_state.metrics_history['avg_waiting_time']):.4f}")
-                st.write(f"Weighted Mean: {w_avg_waiting:.4f}")
-
-            with col_stat5:
-                st.write("**Processing Time (ms)**")
-                st.write(f"Min: {min(st.session_state.metrics_history['avg_processing_time']):.4f}")
-                st.write(f"Max: {max(st.session_state.metrics_history['avg_processing_time']):.4f}")
-                st.write(f"Weighted Mean: {w_avg_processing:.4f}")
-
-            with col_stat6:
-                st.write("**Transmit Time (ms)**")
-                st.write(f"Min: {min(st.session_state.metrics_history['avg_transmit_latency']):.4f}")
-                st.write(f"Max: {max(st.session_state.metrics_history['avg_transmit_latency']):.4f}")
-                st.write(f"Weighted Mean: {w_avg_transmit:.4f}")
-
-            st.write("---")
-            with st.container():
-                st.write("**Cache Hit Rate Statistics**")
-                st.write(f"Min: {min(st.session_state.metrics_history['cache_hit_rate']):.2%}")
-                st.write(f"Max: {max(st.session_state.metrics_history['cache_hit_rate']):.2%}")
-                st.write(f"Mean: {np.mean(st.session_state.metrics_history['cache_hit_rate']):.2%}")
-        else:
-            st.info("⚠️ No history yet. Execute some steps to see history data.")
-    
-    with tab4:
-        st.subheader("📊 Average Results (Cumulative Averages)")
+        st.subheader("📊 Average Results (Cumulative Average)")
         st.caption("Computed across all timesteps in the current session")
         
         if len(st.session_state.metrics_history['timestep']) > 0:
@@ -1025,11 +1148,26 @@ else:
                 st.metric("📈 Average Latency (ms)", f"{avg_latency:.4f}")
             with col_avg4:
                 st.metric("📈 Average Cache Hit Rate", f"{avg_cache_hit_rate:.2%}")
-            
-            st.divider()
+        else:
+            st.info("No data yet. Run some steps to see average results.")
+        
+        st.divider()
+        
+        st.subheader("Latency Breakdown")
+        
+        if len(st.session_state.metrics_history['timestep']) > 0:
+            # Calculate averages
+            total_tasks = st.session_state.metrics_history['total_tasks_completed']
+            if total_tasks > 0:
+                avg_waiting = st.session_state.metrics_history['total_waiting_time'] / total_tasks
+                avg_processing = st.session_state.metrics_history['total_processing_time'] / total_tasks
+                avg_transmit = st.session_state.metrics_history['total_transmit_latency'] / total_tasks
+            else:
+                avg_waiting = 0.0
+                avg_processing = 0.0
+                avg_transmit = 0.0
             
             # Latency Breakdown Visualization
-            st.subheader("⏱️ Latency Breakdown")
             breakdown_fig = go.Figure(data=[
                 go.Pie(labels=['Waiting Time', 'Processing Time', 'Transmission Time'], 
                        values=[avg_waiting, avg_processing, avg_transmit],
@@ -1043,81 +1181,5 @@ else:
             col_b1.metric("⌛ Avg Waiting", f"{avg_waiting:.4f} ms")
             col_b2.metric("⚙️ Avg Processing", f"{avg_processing:.4f} ms")
             col_b3.metric("📡 Avg Transmit", f"{avg_transmit:.4f} ms")
-
-            st.divider()
-            
-            # Detailed breakdown table
-            st.subheader("Detailed Breakdown")
-            breakdown_data = {
-                'Metric': ['Reward', 'Accuracy', 'Total Latency (ms)', 'Waiting Time (ms)', 'Processing Time (ms)', 'Transmit Time (ms)', 'Cache Hit Rate'],
-                'Mean': [avg_reward, avg_accuracy, avg_latency, avg_waiting, avg_processing, avg_transmit, avg_cache_hit_rate],
-                'Std Dev': [
-                    np.std(st.session_state.metrics_history['total_reward']),
-                    np.std(st.session_state.metrics_history['avg_accuracy']),
-                    np.std(st.session_state.metrics_history['avg_latency']),
-                    np.std(st.session_state.metrics_history['avg_waiting_time']),
-                    np.std(st.session_state.metrics_history['avg_processing_time']),
-                    np.std(st.session_state.metrics_history['avg_transmit_latency']),
-                    np.std(st.session_state.metrics_history['cache_hit_rate'])
-                ],
-                'Min': [
-                    min(st.session_state.metrics_history['total_reward']),
-                    min(st.session_state.metrics_history['avg_accuracy']),
-                    min(st.session_state.metrics_history['avg_latency']),
-                    min(st.session_state.metrics_history['avg_waiting_time']),
-                    min(st.session_state.metrics_history['avg_processing_time']),
-                    min(st.session_state.metrics_history['avg_transmit_latency']),
-                    min(st.session_state.metrics_history['cache_hit_rate'])
-                ],
-                'Max': [
-                    max(st.session_state.metrics_history['total_reward']),
-                    max(st.session_state.metrics_history['avg_accuracy']),
-                    max(st.session_state.metrics_history['avg_latency']),
-                    max(st.session_state.metrics_history['avg_waiting_time']),
-                    max(st.session_state.metrics_history['avg_processing_time']),
-                    max(st.session_state.metrics_history['avg_transmit_latency']),
-                    max(st.session_state.metrics_history['cache_hit_rate'])
-                ]
-            }
-            breakdown_df = pd.DataFrame(breakdown_data)
-            st.dataframe(breakdown_df, use_container_width=True)
-            
-            st.divider()
-            
-            # Show distribution of metrics
-            st.subheader("Metric Distributions")
-            col_dist1, col_dist2 = st.columns(2)
-            
-            with col_dist1:
-                # Reward distribution
-                fig_reward_dist = go.Figure()
-                fig_reward_dist.add_trace(go.Histogram(
-                    x=st.session_state.metrics_history['total_reward'],
-                    nbinsx=20,
-                    name='Reward'
-                ))
-                fig_reward_dist.update_layout(
-                    title='Reward Distribution',
-                    xaxis_title='Reward',
-                    yaxis_title='Frequency',
-                    height=400
-                )
-                st.plotly_chart(fig_reward_dist, use_container_width=True, key="reward_dist")
-            
-            with col_dist2:
-                # Latency distribution
-                fig_latency_dist = go.Figure()
-                fig_latency_dist.add_trace(go.Histogram(
-                    x=st.session_state.metrics_history['avg_latency'],
-                    nbinsx=20,
-                    name='Latency (ms)'
-                ))
-                fig_latency_dist.update_layout(
-                    title='Latency Distribution',
-                    xaxis_title='Latency (ms)',
-                    yaxis_title='Frequency',
-                    height=400
-                )
-                st.plotly_chart(fig_latency_dist, use_container_width=True, key="latency_dist")
         else:
-            st.info("No data yet. Run some steps to see average results.")
+            st.info("No data yet. Run some steps to see latency breakdown.")
