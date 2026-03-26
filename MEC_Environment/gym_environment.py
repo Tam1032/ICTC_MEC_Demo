@@ -197,7 +197,7 @@ class Environment(gym.Env):
             channel_gain = self._generate_channel_gain(distance_km)
             #edge_id = self.rng.choice(self.num_edges)
             if self.num_edges == 3:
-                edge_id = self.rng.choice(self.num_edges, p=[0.5, 0.3, 0.2])
+                edge_id = self.rng.choice(self.num_edges, p=[0.4, 0.3, 0.3])
             else:
                 edge_id = self.rng.integers(0, self.num_edges)
             #edge_id = 0
@@ -409,6 +409,9 @@ class Environment(gym.Env):
             new_task = self._generate_task_for_device(device_id)
             new_task.arrival_time = arrival_time
             self.pending_tasks.append(new_task)
+            # Track this task on the device for visualization
+            if hasattr(self.mobile_devices[device_id], 'assigned_tasks'):
+                self.mobile_devices[device_id].assigned_tasks.append(new_task)
                 
     def _get_obs(self, tasks):
         """Convert internal state to observation format.

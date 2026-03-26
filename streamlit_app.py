@@ -24,70 +24,70 @@ def create_network_visualization(_env, seed=42):
     """
     fig = go.Figure()
     
-    # Add base station center
-    fig.add_trace(go.Scatter(
-        x=[0], y=[2],
-        mode='markers+text',
-        text=['📡'],
-        textposition='middle center',
-        textfont=dict(size=72, color='#D84315', family='Arial Black'),
-        marker=dict(size=8, color='#D84315', opacity=0.0),
-        name='📡 Base Station',
-        hovertext=['Base Station'],
-        hoverinfo='text',
-        showlegend=True
-    ))
-    
-    # Add cloud above the base station
-    fig.add_trace(go.Scatter(
-        x=[0], y=[5.0],
-        mode='markers+text',
-        text=['☁️'],
-        textposition='middle center',
-        textfont=dict(size=84),
-        marker=dict(size=8, color='#64B5F6', opacity=0.0),
-        name='☁️ Cloud',
-        hovertext=['Cloud'],
-        hoverinfo='text',
-        showlegend=True
-    ))
-    
-    # Connect base station to cloud
-    fig.add_trace(go.Scatter(
-        x=[0, 0], y=[2, 5.2],
-        mode='lines+markers',
-        line=dict(color='orange', width=3, dash='solid'),
-        marker=dict(size=0),
-        name='🔗 Base Station Connection',
-        showlegend=True,
-        hoverinfo='skip'
-    ))
-    
-    # Add edge servers in a circle
+    # Add edge servers in a circle (needed for positioning before other traces)
     angles = np.linspace(0, 2*np.pi, _env.num_edges, endpoint=False)
     edge_x = np.cos(angles)
     edge_y = np.sin(angles)
     
     # Move Edge 2 farther away for better visibility
     if _env.num_edges > 2:
-        edge_x[0] = edge_x[0] * 0.5  # Scale Edge 0 position to be 0.5x closer
-        edge_x[2] = edge_x[2] * 0.4  # Scale Edge 2 position to be 0.6x closer
-        edge_y[2] = edge_y[2] * 2.0  # Scale Edge 2 position to be 2x farther away
+        edge_x[0] = edge_x[0] * 0.25
+        edge_x[1] = edge_x[1] * 0.6
+        edge_x[2] = edge_x[2] * 0.1
+        edge_y[2] = edge_y[2] * 2.0
     
+    # Add base station center
     fig.add_trace(go.Scatter(
-        x=edge_x, y=edge_y,
+        x=[0], y=[3.5],
         mode='markers+text',
-        text=['🖥️' for _ in range(_env.num_edges)],
+        text=['📡'],
         textposition='middle center',
-        textfont=dict(size=50),
-        marker=dict(size=8, color='#9575CD', opacity=0.0),
-        name='🖥️ Edge Servers',
-        hovertext=[f'Edge Server {i}' for i in range(_env.num_edges)],
+        textfont=dict(size=95, color='#D84315', family='Arial Black'),
+        marker=dict(size=0, color='#D84315'),
+        name='📡 Base Station',
+        hovertext=['Base Station'],
         hoverinfo='text',
-        showlegend=True
+        showlegend=False  # Hidden from legend here, will appear after connections
     ))
     
-    # Add cached models display on edge servers as circular nodes in a rectangle box
+    # Add cloud above the base station
+    fig.add_trace(go.Scatter(
+        x=[0], y=[7.8],
+        mode='markers+text',
+        text=['☁️'],
+        textposition='middle center',
+        textfont=dict(size=90),
+        marker=dict(size=0, color='#64B5F6'),
+        name='☁️ Cloud',
+        hovertext=['Cloud'],
+        hoverinfo='text',
+        showlegend=False  # Hidden from legend here, will appear after connections
+    ))
+    
+    # Connect base station to cloud
+    fig.add_trace(go.Scatter(
+        x=[0, 0], y=[3.5, 7.8],
+        mode='lines+markers',
+        line=dict(color='orange', width=3, dash='solid'),
+        marker=dict(size=0),
+        name='Base Station Connection',
+        showlegend=True,
+        hoverinfo='skip'
+    ))
+    
+    # Connect edges to cloud
+    for i in range(_env.num_edges):
+        fig.add_trace(go.Scatter(
+            x=[edge_x[i], 0], y=[edge_y[i], 3.5],
+            mode='lines+markers',
+            line=dict(color='gray', width=2),
+            marker=dict(size=0),
+            name='Cloud Link' if i == 0 else '',
+            showlegend=bool(i == 0),
+            hoverinfo='skip'
+        ))
+    
+    # Add cached models display on edge servers as circular nodes
     model_circle_x = []
     model_circle_y = []
     model_circle_texts = []
@@ -102,11 +102,13 @@ def create_network_visualization(_env, seed=42):
             models_per_row = min(4, num_models)
             num_rows = (num_models + models_per_row - 1) // models_per_row
             
-            # Rectangle dimensions and position
-            box_width = models_per_row * 0.025
-            box_height = num_rows * 0.5
+            # Rectangle dimensions and position surrounding the cached models
+            box_width = models_per_row * 0.015
+            box_height = num_rows * 0.75
             box_x = edge_x[edge_id]
             box_y = edge_y[edge_id] + 0.9 + (box_height / 2)
+            if edge_id == 2:  # Move box for Edge 2 farther up to avoid overlap
+                box_x -= 0.02
             
             # Draw rectangle box above edge server
             fig.add_shape(
@@ -125,7 +127,7 @@ def create_network_visualization(_env, seed=42):
                 
                 # Position inside the grid
                 model_x = box_x - (box_width / 2) + ((col + 0.5) * (box_width / models_per_row))
-                model_y = box_y + (box_height / 2) - 0.25 - (row * 0.5)
+                model_y = box_y + (box_height / 2) - 0.35 - (row * 0.7)
                 
                 model_circle_x.append(model_x)
                 model_circle_y.append(model_y)
@@ -136,10 +138,10 @@ def create_network_visualization(_env, seed=42):
         fig.add_trace(go.Scatter(
             x=model_circle_x, y=model_circle_y,
             mode='markers+text',
-            marker=dict(size=18, color='#4A90E2', line=dict(color='#2E5C8A', width=2)),
+            marker=dict(size=25, color='#4A90E2', line=dict(color='#2E5C8A', width=2)),
             text=model_circle_texts,
             textposition='middle center',
-            textfont=dict(size=9, color='white', family='Arial Black'),
+            textfont=dict(size=12, color='white', family='Arial Black'),
             name='Cached Models',
             showlegend=True,
             hovertext=[f'Model {m}' for m in model_circle_texts],
@@ -183,8 +185,8 @@ def create_network_visualization(_env, seed=42):
             device_distance = 0.5
             
             # Position relative to the edge server's actual position
-            x = edge_pos_x + 0.15 * device_distance * np.cos(device_angle)
-            y = edge_pos_y + 3.5 * device_distance * np.sin(device_angle) - 3  # Shift devices above edge servers for better visibility
+            x = edge_pos_x + 0.1 * device_distance * np.cos(device_angle)
+            y = edge_pos_y + 5 * device_distance * np.sin(device_angle) - 4.5  # Shift devices above edge servers for better visibility
             
             # Check if THIS DEVICE has active tasks in the current step
             has_tasks = dev_idx in st.session_state.devices_with_tasks
@@ -196,41 +198,7 @@ def create_network_visualization(_env, seed=42):
                 devices_without_tasks.append(dev_idx)
                 devices_without_tasks_coords.append((x, y))
     
-    # Add devices WITHOUT tasks (green)
-    if devices_without_tasks_coords:
-        x_coords = [coord[0] for coord in devices_without_tasks_coords]
-        y_coords = [coord[1] for coord in devices_without_tasks_coords]
-        fig.add_trace(go.Scatter(
-            x=x_coords, y=y_coords,
-            mode='markers+text',
-            marker=dict(size=24, color='#2E7D32', line=dict(color='#1B5E20', width=1), symbol='circle', opacity=0.5),
-            text=['📱'] * len(devices_without_tasks),
-            textposition='middle center',
-            textfont=dict(size=16),
-            name='📱 Mobile Devices (Idle)',
-            showlegend=True,
-            hovertext=[f'Device {idx}' for idx in devices_without_tasks],
-            hoverinfo='text'
-        ))
-    
-    # Add devices WITH tasks (yellow)
-    if devices_with_tasks_coords:
-        x_coords = [coord[0] for coord in devices_with_tasks_coords]
-        y_coords = [coord[1] for coord in devices_with_tasks_coords]
-        fig.add_trace(go.Scatter(
-            x=x_coords, y=y_coords,
-            mode='markers+text',
-            marker=dict(size=24, color='#FFFF00', line=dict(color='#FFA500', width=1), symbol='circle', opacity=0.5),
-            text=['⚡'] * len(devices_with_tasks),
-            textposition='middle center',
-            textfont=dict(size=16, color='#FF6B00'),
-            name='⚡ Mobile Devices (Generating Tasks)',
-            showlegend=True,
-            hovertext=[f'Device {idx}' for idx in devices_with_tasks],
-            hoverinfo='text'
-        ))
-    
-    # Add task rectangles above devices with tasks
+    # Prepare task data for drawing tasks BEFORE devices
     task_x_positions = []
     task_y_positions = []
     task_texts = []
@@ -239,56 +207,117 @@ def create_network_visualization(_env, seed=42):
         dev_idx = devices_with_tasks[coord_idx]
         dev = _env.mobile_devices[dev_idx]
         if hasattr(dev, 'assigned_tasks') and isinstance(dev.assigned_tasks, list) and len(dev.assigned_tasks) > 0:
-            # Display tasks above the device
-            for task_idx, task in enumerate(dev.assigned_tasks[:3]):  # Show max 3 tasks
-                # Position tasks in a row above the device
-                # Spread them out horizontally: -0.4, 0, +0.4 for better separation
-                task_x = dev_x #+ (task_idx - 1) * 0.4
-                task_y = dev_y + 0.5  # Place tasks well above device to avoid overlap
+            for task_idx, task in enumerate(dev.assigned_tasks[:3]):
+                task_x = dev_x
+                task_y = dev_y + 0.75
                 task_x_positions.append(task_x)
                 task_y_positions.append(task_y)
-                # task.task_type represents the DNN model type (can be 1, 2, 3, etc.)
                 task_type = getattr(task, 'task_type', 'Unknown')
                 task_type_id = _env.task_types.index(task_type) if task_type in _env.task_types else 'Unknown'
                 task_texts.append(str(task_type_id))
     
+    # Add tasks BEFORE devices for correct legend order
     if task_x_positions:
         fig.add_trace(go.Scatter(
             x=task_x_positions, y=task_y_positions,
             mode='markers+text',
-            marker=dict(size=18, color='#FF6B00', symbol='square', line=dict(color='#CC5500', width=2)),
+            marker=dict(size=28, color='#FF6B00', symbol='square', line=dict(color='#CC5500', width=2)),
             text=task_texts,
             textposition='middle center',
-            textfont=dict(size=11, color='white', family='Arial Black'),
+            textfont=dict(size=15, color='white', family='Arial Black'),
             name='Tasks',
-            showlegend=False,
+            showlegend=True,
             hovertext=[f'Task Type {t}' for t in task_texts],
             hoverinfo='text'
         ))
     
-    # Connect edges to cloud
-    for i in range(_env.num_edges):
+    # Add devices WITHOUT tasks (idle)
+    if devices_without_tasks_coords:
+        x_coords = [coord[0] for coord in devices_without_tasks_coords]
+        y_coords = [coord[1] for coord in devices_without_tasks_coords]
         fig.add_trace(go.Scatter(
-            x=[edge_x[i], 0], y=[edge_y[i], 2],
-            mode='lines+markers',
-            line=dict(color='gray', width=2),
+            x=x_coords, y=y_coords,
+            mode='markers+text',
             marker=dict(size=0),
-            name='🔗 Cloud Link' if i == 0 else '',
-            showlegend=bool(i == 0),
-            hoverinfo='skip'
+            text=['👤'] * len(devices_without_tasks),
+            textposition='middle center',
+            textfont=dict(size=35),
+            name='👤 Mobile Devices (Idle)',
+            showlegend=True,
+            hovertext=[f'Device {idx}' for idx in devices_without_tasks],
+            hoverinfo='text'
         ))
+    
+    # Add devices WITH tasks
+    if devices_with_tasks_coords:
+        x_coords = [coord[0] for coord in devices_with_tasks_coords]
+        y_coords = [coord[1] for coord in devices_with_tasks_coords]
+        fig.add_trace(go.Scatter(
+            x=x_coords, y=y_coords,
+            mode='markers+text',
+            marker=dict(size=0),
+            text=['👤'] * len(devices_with_tasks),
+            textposition='middle center',
+            textfont=dict(size=35),
+            name='👤 Mobile Devices (Generating Tasks)',
+            showlegend=False,
+            hovertext=[f'Device {idx}' for idx in devices_with_tasks],
+            hoverinfo='text'
+        ))
+    
+    # Add base station center to legend (after tasks for proper ordering)
+    fig.add_trace(go.Scatter(
+        x=[0], y=[3.5],
+        mode='markers+text',
+        text=['📡'],
+        textposition='middle center',
+        textfont=dict(size=95, color='#D84315', family='Arial Black'),
+        marker=dict(size=0, color='#D84315'),
+        name='📡 Base Station',
+        hovertext=['Base Station'],
+        hoverinfo='text',
+        showlegend=True
+    ))
+    
+    # Add cloud to legend (after tasks for proper ordering)
+    fig.add_trace(go.Scatter(
+        x=[0], y=[7.8],
+        mode='markers+text',
+        text=['☁️'],
+        textposition='middle center',
+        textfont=dict(size=90),
+        marker=dict(size=0, color='#64B5F6'),
+        name='☁️ Cloud',
+        hovertext=['Cloud'],
+        hoverinfo='text',
+        showlegend=True
+    ))
+    
+    # Add edge servers to legend (after tasks for proper ordering)
+    fig.add_trace(go.Scatter(
+        x=edge_x, y=edge_y,
+        mode='markers+text',
+        text=['🖥️' for _ in range(_env.num_edges)],
+        textposition='middle center',
+        textfont=dict(size=65),
+        marker=dict(size=0, color='#9575CD', opacity=1.0),
+        name='🖥️ Edge Servers',
+        hovertext=[f'Edge Server {i}' for i in range(_env.num_edges)],
+        hoverinfo='text',
+        showlegend=True
+    ))
     
     fig.update_layout(
         #title="Network Topology",
         #titlefont=dict(size=20),
         showlegend=True,
         hovermode='closest',
-        margin=dict(b=40, l=5, r=5, t=150),
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        margin=dict(b=20, l=20, r=20, t=20),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),#, range=[-2.5, 2.5]),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-9, 9]),
         height=1200,
-        font=dict(size=40),
-        legend=dict(font=dict(size=14), x=0.75, y=1.25)
+        font=dict(size=50),
+        legend=dict(font=dict(size=18), x=0.75, y=0.95)
     )
     
     return fig
