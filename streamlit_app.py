@@ -457,7 +457,7 @@ def create_network_visualization(_env, seed=42):
         hovermode='closest',
         margin=dict(b=20, l=20, r=20, t=20),
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),#, range=[-2.5, 2.5]),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-9, 9]),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-10, 9]),
         height=1200,
         font=dict(size=50),
         legend=dict(font=dict(size=18), x=0.75, y=0.95)
