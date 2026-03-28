@@ -2,10 +2,28 @@ import numpy as np
 
 class CloudServer:
     def __init__(self, computing_power=5, transmit_data_rate=1, download_rate=250, propagation_delay=0.2):
+        self.edge_id = -1  # Cloud server identifier (not an edge, use -1)
         self.computing_power = computing_power * 1e9
         self.transmit_data_rate = transmit_data_rate # in MB/s
         self.propagation_delay = propagation_delay # in seconds
         self.download_rate = download_rate # in MB/s
+        self.task_queue = []  # Queue of tasks being processed at cloud
+        self.num_tasks_submitted = 0
+    
+    def add_task_to_queue(self, task):
+        """Add a task to the cloud queue."""
+        self.task_queue.append(task)
+        self.num_tasks_submitted += 1
+    
+    def remove_task_from_queue(self, task):
+        """Remove a task from the cloud queue."""
+        if task in self.task_queue:
+            self.task_queue.remove(task)
+        self.num_tasks_submitted -= 1
+    
+    def clear_task_queue(self):
+        """Clear all tasks from the queue (called at start of next timestep)."""
+        self.task_queue = []
     
     def calculate_computing_delay(self, required_cycles):
         """
@@ -76,6 +94,7 @@ class EdgeServer:
         """
         Add a task to the edge queue if it can be offloaded.
         """
+        self.task_queue.append(task)
         self.num_tasks_submitted += 1
 
     def update_request_counter(self, model_idx):
@@ -89,7 +108,15 @@ class EdgeServer:
         """
         Remove a task from the edge queue when it is completed.
         """
+        if task in self.task_queue:
+            self.task_queue.remove(task)
         self.num_tasks_submitted -= 1
+    
+    def clear_task_queue(self):
+        """
+        Clear all tasks from the queue (called at start of next timestep).
+        """
+        self.task_queue = []
 
     def check_caching(self, model_size):
         """
@@ -173,6 +200,7 @@ class MobileDevice:
         )  # Local computing power in cycles/sec
         self.bandwidth = bandwidth * 1e6  # Bandwidth in Hz
         self.edge_id = edge_id  # Associated edge server ID
+        self.assigned_tasks = []  # List of tasks assigned to this device in current step
 
     def assign_bandwidth(self, bandwidth):
         self.bandwidth = bandwidth  # Bandwidth in Hz
@@ -182,3 +210,9 @@ class MobileDevice:
         Calculate the local latency based on the input size and local computing power.
         """
         return required_cycles / self.local_computing_power  # Convert to seconds
+    
+    def reset_tasks(self):
+        """
+        Reset the assigned tasks list (called each step or on environment reset).
+        """
+        self.assigned_tasks = []
