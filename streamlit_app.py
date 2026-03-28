@@ -352,7 +352,7 @@ def create_network_visualization(_env, seed=42):
         if hasattr(dev, 'assigned_tasks') and isinstance(dev.assigned_tasks, list) and len(dev.assigned_tasks) > 0:
             for task_idx, task in enumerate(dev.assigned_tasks[:3]):
                 task_x = dev_x
-                task_y = dev_y + 0.75
+                task_y = dev_y + 0.85
                 task_x_positions.append(task_x)
                 task_y_positions.append(task_y)
                 task_type = getattr(task, 'task_type', 'Unknown')
