@@ -1,5 +1,5 @@
 {
-    "num_devices": 30,
+    "num_devices": 20,
     "num_edges": 3,
     "num_models": 12,
     "edge_cores": 1,

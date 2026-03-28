@@ -837,7 +837,7 @@ with st.sidebar:
             'num_models': 12,
             'local_computing_range': [1, 2],
             'cloud_computing': 5,
-            'edge_computing': 30,
+            'edge_computing': 20,
             'edge_storage': 15,
             'bandwidth': 20,
             'i2i_tranmit_rate': 5,
@@ -854,9 +854,9 @@ with st.sidebar:
     
     # Configuration parameters
     num_edges = st.number_input("Number of Edge Servers", 1, 10, default_env_args.get('num_edges', 3))
-    num_devices = st.number_input("Number of Mobile Devices", 1, 50, default_env_args.get('num_devices', 30))
+    num_devices = st.number_input("Number of Mobile Devices", 1, 50, default_env_args.get('num_devices', 20))
     num_models = st.number_input("Number of Models", 1, 20, default_env_args.get('num_models', 12))
-    edge_computing = st.slider("Edge Computing Power (GHz)", 1, 100, default_env_args.get('edge_computing', 30))
+    edge_computing = st.slider("Edge Computing Power (GHz)", 1, 100, default_env_args.get('edge_computing', 20))
     edge_storage = st.slider("Edge Storage (GB)", 1, 100, default_env_args.get('edge_storage', 15))
     task_arrival_rate = st.slider("Task Arrival Rate", 0.1, 2.0, default_env_args.get('task_arrival_rate', 0.6), step=0.1)
     zipf_a = st.slider("Zipf Distribution Parameter", 0.5, 2.0, default_env_args.get('zipf_a', 1.2), step=0.1)
