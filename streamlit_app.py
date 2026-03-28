@@ -156,140 +156,140 @@ def create_network_visualization(_env, seed=42):
             hoverinfo='text'
         ))
 
-    # ----- NEW: Add edge task queue boxes (task type only) -----
-    # Queue visualization is temporarily disabled for demo stability.
-    show_queue_visualization = False
-    queue_task_x = []
-    queue_task_y = []
-    queue_task_texts = []
-    queue_task_edge = []
+    # # ----- NEW: Add edge task queue boxes (task type only) -----
+    # # Queue visualization is temporarily disabled for demo stability.
+    # show_queue_visualization = False
+    # queue_task_x = []
+    # queue_task_y = []
+    # queue_task_texts = []
+    # queue_task_edge = []
 
-    # Read tasks directly from edge server task queues
-    for edge_id, edge in (enumerate(_env.edge_servers) if show_queue_visualization else []):
-        if not hasattr(edge, 'task_queue') or len(edge.task_queue) == 0:
-            continue
+    # # Read tasks directly from edge server task queues
+    # for edge_id, edge in (enumerate(_env.edge_servers) if show_queue_visualization else []):
+    #     if not hasattr(edge, 'task_queue') or len(edge.task_queue) == 0:
+    #         continue
         
-        tasks = edge.task_queue
+    #     tasks = edge.task_queue
         
-        # Keep at most one queued task per device to match generator semantics.
-        unique_tasks = []
-        seen_devices = set()
-        for task in tasks:
-            if task.device_id in seen_devices:
-                continue
-            seen_devices.add(task.device_id)
-            unique_tasks.append(task)
+    #     # Keep at most one queued task per device to match generator semantics.
+    #     unique_tasks = []
+    #     seen_devices = set()
+    #     for task in tasks:
+    #         if task.device_id in seen_devices:
+    #             continue
+    #         seen_devices.add(task.device_id)
+    #         unique_tasks.append(task)
 
-        display_tasks = unique_tasks[:12]
-        num_tasks = len(display_tasks)
-        if num_tasks == 0:
-            continue
+    #     display_tasks = unique_tasks[:12]
+    #     num_tasks = len(display_tasks)
+    #     if num_tasks == 0:
+    #         continue
 
-        # Match cached-model layout style, but place queue BELOW edge server.
-        tasks_per_row = min(4, num_tasks)
-        num_rows = (num_tasks + tasks_per_row - 1) // tasks_per_row
-        box_width = tasks_per_row * 0.015
-        box_height = max(0.75, num_rows * 0.70)
-        box_x = edge_x[edge_id]
-        box_y = edge_y[edge_id] - 0.9 - (box_height / 2)
+    #     # Match cached-model layout style, but place queue BELOW edge server.
+    #     tasks_per_row = min(4, num_tasks)
+    #     num_rows = (num_tasks + tasks_per_row - 1) // tasks_per_row
+    #     box_width = tasks_per_row * 0.015
+    #     box_height = max(0.75, num_rows * 0.70)
+    #     box_x = edge_x[edge_id]
+    #     box_y = edge_y[edge_id] - 0.9 - (box_height / 2)
 
-        fig.add_shape(
-            type='rect',
-            x0=box_x - box_width / 2, y0=box_y - box_height / 2,
-            x1=box_x + box_width / 2, y1=box_y + box_height / 2,
-            line=dict(color='#FF8C00', width=2),
-            fillcolor='rgba(255, 140, 0, 0.1)',
-            layer='below'
-        )
+    #     fig.add_shape(
+    #         type='rect',
+    #         x0=box_x - box_width / 2, y0=box_y - box_height / 2,
+    #         x1=box_x + box_width / 2, y1=box_y + box_height / 2,
+    #         line=dict(color='#FF8C00', width=2),
+    #         fillcolor='rgba(255, 140, 0, 0.1)',
+    #         layer='below'
+    #     )
 
-        for task_idx, task in enumerate(display_tasks):
-            row = task_idx // tasks_per_row
-            col = task_idx % tasks_per_row
-            tx = box_x - (box_width / 2) + ((col + 0.5) * (box_width / tasks_per_row))
-            ty = box_y + (box_height / 2) - 0.35 - (row * 0.7)
-            task_type_id = _env.task_types.index(task.task_type) if task.task_type in _env.task_types else -1
+    #     for task_idx, task in enumerate(display_tasks):
+    #         row = task_idx // tasks_per_row
+    #         col = task_idx % tasks_per_row
+    #         tx = box_x - (box_width / 2) + ((col + 0.5) * (box_width / tasks_per_row))
+    #         ty = box_y + (box_height / 2) - 0.35 - (row * 0.7)
+    #         task_type_id = _env.task_types.index(task.task_type) if task.task_type in _env.task_types else -1
 
-            queue_task_x.append(tx)
-            queue_task_y.append(ty)
-            queue_task_texts.append(str(task_type_id))
-            queue_task_edge.append(edge_id)
+    #         queue_task_x.append(tx)
+    #         queue_task_y.append(ty)
+    #         queue_task_texts.append(str(task_type_id))
+    #         queue_task_edge.append(edge_id)
 
-    if show_queue_visualization and queue_task_x:
-        fig.add_trace(go.Scatter(
-            x=queue_task_x, y=queue_task_y,
-            mode='markers+text',
-            marker=dict(size=25, color='#FF6B00', line=dict(color='#CC5500', width=2)),
-            text=queue_task_texts,
-            textposition='middle center',
-            textfont=dict(size=12, color='white', family='Arial Black'),
-            name='Edge Queue Task Types',
-            showlegend=True,
-            hovertext=[f'Edge {edge_id} queue type {tt}' for edge_id, tt in zip(queue_task_edge, queue_task_texts)],
-            hoverinfo='text'
-        ))
+    # if show_queue_visualization and queue_task_x:
+    #     fig.add_trace(go.Scatter(
+    #         x=queue_task_x, y=queue_task_y,
+    #         mode='markers+text',
+    #         marker=dict(size=25, color='#FF6B00', line=dict(color='#CC5500', width=2)),
+    #         text=queue_task_texts,
+    #         textposition='middle center',
+    #         textfont=dict(size=12, color='white', family='Arial Black'),
+    #         name='Edge Queue Task Types',
+    #         showlegend=True,
+    #         hovertext=[f'Edge {edge_id} queue type {tt}' for edge_id, tt in zip(queue_task_edge, queue_task_texts)],
+    #         hoverinfo='text'
+    #     ))
 
-    # ----- Add cloud server task queue -----
-    cloud_queue_task_x = []
-    cloud_queue_task_y = []
-    cloud_queue_task_texts = []
+    # # ----- Add cloud server task queue -----
+    # cloud_queue_task_x = []
+    # cloud_queue_task_y = []
+    # cloud_queue_task_texts = []
     
-    if show_queue_visualization and hasattr(_env, 'cloud_server') and hasattr(_env.cloud_server, 'task_queue') and len(_env.cloud_server.task_queue) > 0:
-        cloud_tasks = _env.cloud_server.task_queue
+    # if show_queue_visualization and hasattr(_env, 'cloud_server') and hasattr(_env.cloud_server, 'task_queue') and len(_env.cloud_server.task_queue) > 0:
+    #     cloud_tasks = _env.cloud_server.task_queue
         
-        # Keep at most one queued task per device
-        unique_cloud_tasks = []
-        seen_devices = set()
-        for task in cloud_tasks:
-            if task.device_id in seen_devices:
-                continue
-            seen_devices.add(task.device_id)
-            unique_cloud_tasks.append(task)
+    #     # Keep at most one queued task per device
+    #     unique_cloud_tasks = []
+    #     seen_devices = set()
+    #     for task in cloud_tasks:
+    #         if task.device_id in seen_devices:
+    #             continue
+    #         seen_devices.add(task.device_id)
+    #         unique_cloud_tasks.append(task)
         
-        display_cloud_tasks = unique_cloud_tasks[:12]
-        num_cloud_tasks = len(display_cloud_tasks)
+    #     display_cloud_tasks = unique_cloud_tasks[:12]
+    #     num_cloud_tasks = len(display_cloud_tasks)
         
-        if num_cloud_tasks > 0:
-            # Place cloud queue above the cloud (at y position around 6.5)
-            tasks_per_row = min(4, num_cloud_tasks)
-            num_rows = (num_cloud_tasks + tasks_per_row - 1) // tasks_per_row
-            box_width = tasks_per_row * 0.015
-            box_height = max(0.75, num_rows * 0.70)
-            box_x = 0.0  # Center with cloud
-            box_y = 6.5 - (box_height / 2)  # Below the cloud emoji position
+    #     if num_cloud_tasks > 0:
+    #         # Place cloud queue above the cloud (at y position around 6.5)
+    #         tasks_per_row = min(4, num_cloud_tasks)
+    #         num_rows = (num_cloud_tasks + tasks_per_row - 1) // tasks_per_row
+    #         box_width = tasks_per_row * 0.015
+    #         box_height = max(0.75, num_rows * 0.70)
+    #         box_x = 0.0  # Center with cloud
+    #         box_y = 6.5 - (box_height / 2)  # Below the cloud emoji position
             
-            fig.add_shape(
-                type='rect',
-                x0=box_x - box_width / 2, y0=box_y - box_height / 2,
-                x1=box_x + box_width / 2, y1=box_y + box_height / 2,
-                line=dict(color='#6200EA', width=2),  # Purple for cloud
-                fillcolor='rgba(98, 0, 234, 0.1)',
-                layer='below'
-            )
+    #         fig.add_shape(
+    #             type='rect',
+    #             x0=box_x - box_width / 2, y0=box_y - box_height / 2,
+    #             x1=box_x + box_width / 2, y1=box_y + box_height / 2,
+    #             line=dict(color='#6200EA', width=2),  # Purple for cloud
+    #             fillcolor='rgba(98, 0, 234, 0.1)',
+    #             layer='below'
+    #         )
             
-            for task_idx, task in enumerate(display_cloud_tasks):
-                row = task_idx // tasks_per_row
-                col = task_idx % tasks_per_row
-                tx = box_x - (box_width / 2) + ((col + 0.5) * (box_width / tasks_per_row))
-                ty = box_y + (box_height / 2) - 0.35 - (row * 0.7)
-                task_type_id = _env.task_types.index(task.task_type) if task.task_type in _env.task_types else -1
+    #         for task_idx, task in enumerate(display_cloud_tasks):
+    #             row = task_idx // tasks_per_row
+    #             col = task_idx % tasks_per_row
+    #             tx = box_x - (box_width / 2) + ((col + 0.5) * (box_width / tasks_per_row))
+    #             ty = box_y + (box_height / 2) - 0.35 - (row * 0.7)
+    #             task_type_id = _env.task_types.index(task.task_type) if task.task_type in _env.task_types else -1
                 
-                cloud_queue_task_x.append(tx)
-                cloud_queue_task_y.append(ty)
-                cloud_queue_task_texts.append(str(task_type_id))
+    #             cloud_queue_task_x.append(tx)
+    #             cloud_queue_task_y.append(ty)
+    #             cloud_queue_task_texts.append(str(task_type_id))
     
-    if show_queue_visualization and cloud_queue_task_x:
-        fig.add_trace(go.Scatter(
-            x=cloud_queue_task_x, y=cloud_queue_task_y,
-            mode='markers+text',
-            marker=dict(size=25, color='#7B1FA2', line=dict(color='#4A148C', width=2)),
-            text=cloud_queue_task_texts,
-            textposition='middle center',
-            textfont=dict(size=12, color='white', family='Arial Black'),
-            name='Cloud Queue Task Types',
-            showlegend=True,
-            hovertext=[f'Cloud queue type {tt}' for tt in cloud_queue_task_texts],
-            hoverinfo='text'
-        ))
+    # if show_queue_visualization and cloud_queue_task_x:
+    #     fig.add_trace(go.Scatter(
+    #         x=cloud_queue_task_x, y=cloud_queue_task_y,
+    #         mode='markers+text',
+    #         marker=dict(size=25, color='#7B1FA2', line=dict(color='#4A148C', width=2)),
+    #         text=cloud_queue_task_texts,
+    #         textposition='middle center',
+    #         textfont=dict(size=12, color='white', family='Arial Black'),
+    #         name='Cloud Queue Task Types',
+    #         showlegend=True,
+    #         hovertext=[f'Cloud queue type {tt}' for tt in cloud_queue_task_texts],
+    #         hoverinfo='text'
+    #     ))
 
     # Add mobile devices (sampled) with deterministic positioning
     if _env.num_devices <= 20:
