@@ -8,6 +8,8 @@ import json
 import glob
 import os
 import traceback
+import base64
+from PIL import Image
 from MEC_Environment.gym_environment import Environment
 from MEC_Environment.dual_timescale_wrapper import MECDualTimeScaleEnv, SlowEnvWrapper, FastEnvWrapper
 from Optimizer.Random_Dual_Optimizer import RandomDualOptimizer
@@ -16,6 +18,15 @@ from stable_baselines3 import A2C
 import time
 
 # ==================== HELPER FUNCTIONS ====================
+
+def load_image_as_base64(image_path):
+    """Load image file and convert to base64 string."""
+    try:
+        with open(image_path, 'rb') as img_file:
+            return base64.b64encode(img_file.read()).decode('utf-8')
+    except FileNotFoundError:
+        st.warning(f"⚠️ Image not found at {image_path}")
+        return None
 
 def create_network_visualization(_env, seed=42):
     """Create a visualization of the network topology.
@@ -36,18 +47,15 @@ def create_network_visualization(_env, seed=42):
         edge_x[2] = edge_x[2] * 0.1
         edge_y[2] = edge_y[2] * 2.0
     
-    # Add base station center
+    # Add base station center (hidden, will be shown in legend later with image overlay)
     fig.add_trace(go.Scatter(
         x=[0], y=[3.5],
-        mode='markers+text',
-        text=['📡'],
-        textposition='middle center',
-        textfont=dict(size=95, color='#D84315', family='Arial Black'),
-        marker=dict(size=0, color='#D84315'),
+        mode='markers',
+        marker=dict(size=0, color='#D84315', symbol='circle'),
         name='📡 Base Station',
         hovertext=['Base Station'],
         hoverinfo='text',
-        showlegend=False  # Hidden from legend here, will appear after connections
+        showlegend=False
     ))
     
     # Add cloud above the base station
@@ -56,7 +64,7 @@ def create_network_visualization(_env, seed=42):
         mode='markers+text',
         text=['☁️'],
         textposition='middle center',
-        textfont=dict(size=90),
+        textfont=dict(size=100),
         marker=dict(size=0, color='#64B5F6'),
         name='☁️ Cloud',
         hovertext=['Cloud'],
@@ -106,7 +114,7 @@ def create_network_visualization(_env, seed=42):
             box_width = models_per_row * 0.015
             box_height = num_rows * 0.75
             box_x = edge_x[edge_id]
-            box_y = edge_y[edge_id] + 0.9 + (box_height / 2)
+            box_y = edge_y[edge_id] + 1.3 + (box_height / 2)
             if edge_id == 2:  # Move box for Edge 2 farther up to avoid overlap
                 box_x -= 0.02
             
@@ -147,7 +155,142 @@ def create_network_visualization(_env, seed=42):
             hovertext=[f'Model {m}' for m in model_circle_texts],
             hoverinfo='text'
         ))
+
+    # ----- NEW: Add edge task queue boxes (task type only) -----
+    # Queue visualization is temporarily disabled for demo stability.
+    show_queue_visualization = False
+    queue_task_x = []
+    queue_task_y = []
+    queue_task_texts = []
+    queue_task_edge = []
+
+    # Read tasks directly from edge server task queues
+    for edge_id, edge in (enumerate(_env.edge_servers) if show_queue_visualization else []):
+        if not hasattr(edge, 'task_queue') or len(edge.task_queue) == 0:
+            continue
+        
+        tasks = edge.task_queue
+        
+        # Keep at most one queued task per device to match generator semantics.
+        unique_tasks = []
+        seen_devices = set()
+        for task in tasks:
+            if task.device_id in seen_devices:
+                continue
+            seen_devices.add(task.device_id)
+            unique_tasks.append(task)
+
+        display_tasks = unique_tasks[:12]
+        num_tasks = len(display_tasks)
+        if num_tasks == 0:
+            continue
+
+        # Match cached-model layout style, but place queue BELOW edge server.
+        tasks_per_row = min(4, num_tasks)
+        num_rows = (num_tasks + tasks_per_row - 1) // tasks_per_row
+        box_width = tasks_per_row * 0.015
+        box_height = max(0.75, num_rows * 0.70)
+        box_x = edge_x[edge_id]
+        box_y = edge_y[edge_id] - 0.9 - (box_height / 2)
+
+        fig.add_shape(
+            type='rect',
+            x0=box_x - box_width / 2, y0=box_y - box_height / 2,
+            x1=box_x + box_width / 2, y1=box_y + box_height / 2,
+            line=dict(color='#FF8C00', width=2),
+            fillcolor='rgba(255, 140, 0, 0.1)',
+            layer='below'
+        )
+
+        for task_idx, task in enumerate(display_tasks):
+            row = task_idx // tasks_per_row
+            col = task_idx % tasks_per_row
+            tx = box_x - (box_width / 2) + ((col + 0.5) * (box_width / tasks_per_row))
+            ty = box_y + (box_height / 2) - 0.35 - (row * 0.7)
+            task_type_id = _env.task_types.index(task.task_type) if task.task_type in _env.task_types else -1
+
+            queue_task_x.append(tx)
+            queue_task_y.append(ty)
+            queue_task_texts.append(str(task_type_id))
+            queue_task_edge.append(edge_id)
+
+    if show_queue_visualization and queue_task_x:
+        fig.add_trace(go.Scatter(
+            x=queue_task_x, y=queue_task_y,
+            mode='markers+text',
+            marker=dict(size=25, color='#FF6B00', line=dict(color='#CC5500', width=2)),
+            text=queue_task_texts,
+            textposition='middle center',
+            textfont=dict(size=12, color='white', family='Arial Black'),
+            name='Edge Queue Task Types',
+            showlegend=True,
+            hovertext=[f'Edge {edge_id} queue type {tt}' for edge_id, tt in zip(queue_task_edge, queue_task_texts)],
+            hoverinfo='text'
+        ))
+
+    # ----- Add cloud server task queue -----
+    cloud_queue_task_x = []
+    cloud_queue_task_y = []
+    cloud_queue_task_texts = []
     
+    if show_queue_visualization and hasattr(_env, 'cloud_server') and hasattr(_env.cloud_server, 'task_queue') and len(_env.cloud_server.task_queue) > 0:
+        cloud_tasks = _env.cloud_server.task_queue
+        
+        # Keep at most one queued task per device
+        unique_cloud_tasks = []
+        seen_devices = set()
+        for task in cloud_tasks:
+            if task.device_id in seen_devices:
+                continue
+            seen_devices.add(task.device_id)
+            unique_cloud_tasks.append(task)
+        
+        display_cloud_tasks = unique_cloud_tasks[:12]
+        num_cloud_tasks = len(display_cloud_tasks)
+        
+        if num_cloud_tasks > 0:
+            # Place cloud queue above the cloud (at y position around 6.5)
+            tasks_per_row = min(4, num_cloud_tasks)
+            num_rows = (num_cloud_tasks + tasks_per_row - 1) // tasks_per_row
+            box_width = tasks_per_row * 0.015
+            box_height = max(0.75, num_rows * 0.70)
+            box_x = 0.0  # Center with cloud
+            box_y = 6.5 - (box_height / 2)  # Below the cloud emoji position
+            
+            fig.add_shape(
+                type='rect',
+                x0=box_x - box_width / 2, y0=box_y - box_height / 2,
+                x1=box_x + box_width / 2, y1=box_y + box_height / 2,
+                line=dict(color='#6200EA', width=2),  # Purple for cloud
+                fillcolor='rgba(98, 0, 234, 0.1)',
+                layer='below'
+            )
+            
+            for task_idx, task in enumerate(display_cloud_tasks):
+                row = task_idx // tasks_per_row
+                col = task_idx % tasks_per_row
+                tx = box_x - (box_width / 2) + ((col + 0.5) * (box_width / tasks_per_row))
+                ty = box_y + (box_height / 2) - 0.35 - (row * 0.7)
+                task_type_id = _env.task_types.index(task.task_type) if task.task_type in _env.task_types else -1
+                
+                cloud_queue_task_x.append(tx)
+                cloud_queue_task_y.append(ty)
+                cloud_queue_task_texts.append(str(task_type_id))
+    
+    if show_queue_visualization and cloud_queue_task_x:
+        fig.add_trace(go.Scatter(
+            x=cloud_queue_task_x, y=cloud_queue_task_y,
+            mode='markers+text',
+            marker=dict(size=25, color='#7B1FA2', line=dict(color='#4A148C', width=2)),
+            text=cloud_queue_task_texts,
+            textposition='middle center',
+            textfont=dict(size=12, color='white', family='Arial Black'),
+            name='Cloud Queue Task Types',
+            showlegend=True,
+            hovertext=[f'Cloud queue type {tt}' for tt in cloud_queue_task_texts],
+            hoverinfo='text'
+        ))
+
     # Add mobile devices (sampled) with deterministic positioning
     if _env.num_devices <= 20:
         device_sample_size = _env.num_devices
@@ -186,7 +329,7 @@ def create_network_visualization(_env, seed=42):
             
             # Position relative to the edge server's actual position
             x = edge_pos_x + 0.1 * device_distance * np.cos(device_angle)
-            y = edge_pos_y + 5 * device_distance * np.sin(device_angle) - 4.5  # Shift devices above edge servers for better visibility
+            y = edge_pos_y + 5 * device_distance * np.sin(device_angle) - 4.75  # Shift devices above edge servers for better visibility
             
             # Check if THIS DEVICE has active tasks in the current step
             has_tasks = dev_idx in st.session_state.devices_with_tasks
@@ -241,8 +384,8 @@ def create_network_visualization(_env, seed=42):
             marker=dict(size=0),
             text=['👤'] * len(devices_without_tasks),
             textposition='middle center',
-            textfont=dict(size=35),
-            name='👤 Mobile Devices (Idle)',
+            textfont=dict(size=38),
+            name='👤 Mobile Devices',
             showlegend=True,
             hovertext=[f'Device {idx}' for idx in devices_without_tasks],
             hoverinfo='text'
@@ -258,7 +401,7 @@ def create_network_visualization(_env, seed=42):
             marker=dict(size=0),
             text=['👤'] * len(devices_with_tasks),
             textposition='middle center',
-            textfont=dict(size=35),
+            textfont=dict(size=38),
             name='👤 Mobile Devices (Generating Tasks)',
             showlegend=False,
             hovertext=[f'Device {idx}' for idx in devices_with_tasks],
@@ -266,14 +409,14 @@ def create_network_visualization(_env, seed=42):
         ))
     
     # Add base station center to legend (after tasks for proper ordering)
+    # Small visible marker for legend, image will render on top
     fig.add_trace(go.Scatter(
         x=[0], y=[3.5],
         mode='markers+text',
-        text=['📡'],
-        textposition='middle center',
-        textfont=dict(size=95, color='#D84315', family='Arial Black'),
-        marker=dict(size=0, color='#D84315'),
-        name='📡 Base Station',
+        text="🗼",
+        textfont=dict(size=100),
+        marker=dict(size=0, color='#D84315', symbol='circle'),
+        name='🗼 Base Station',
         hovertext=['Base Station'],
         hoverinfo='text',
         showlegend=True
@@ -285,7 +428,7 @@ def create_network_visualization(_env, seed=42):
         mode='markers+text',
         text=['☁️'],
         textposition='middle center',
-        textfont=dict(size=90),
+        textfont=dict(size=100),
         marker=dict(size=0, color='#64B5F6'),
         name='☁️ Cloud',
         hovertext=['Cloud'],
@@ -299,7 +442,7 @@ def create_network_visualization(_env, seed=42):
         mode='markers+text',
         text=['🖥️' for _ in range(_env.num_edges)],
         textposition='middle center',
-        textfont=dict(size=65),
+        textfont=dict(size=100),
         marker=dict(size=0, color='#9575CD', opacity=1.0),
         name='🖥️ Edge Servers',
         hovertext=[f'Edge Server {i}' for i in range(_env.num_edges)],
@@ -319,6 +462,45 @@ def create_network_visualization(_env, seed=42):
         font=dict(size=50),
         legend=dict(font=dict(size=18), x=0.75, y=0.95)
     )
+    
+    # Load and add base station image AFTER layout updates (so it renders on top)
+    # base_station_image_path = os.path.abspath("base_station_icon.png")
+    # print(f"[DEBUG] Looking for image at: {base_station_image_path}")
+    # print(f"[DEBUG] Does file exist? {os.path.exists(base_station_image_path)}")
+    
+    # if os.path.exists(base_station_image_path):
+    #     try:
+    #         base_station_b64 = load_image_as_base64(base_station_image_path)
+    #         if base_station_b64:
+    #             print(f"[DEBUG] Image loaded and encoded successfully (size: {len(base_station_b64)} bytes)")
+                
+    #             # Add image on the plot at base station location
+    #             fig.add_layout_image(
+    #                 source=f"data:image/png;base64,{base_station_b64}",
+    #                 xref="x", yref="y",
+    #                 x=0, y=3.5,
+    #                 sizex=1.2, sizey=1.2,
+    #                 xanchor="center", yanchor="middle",
+    #                 layer="above"
+    #             )
+                
+    #             # Also add image to legend area
+    #             fig.add_layout_image(
+    #                 source=f"data:image/png;base64,{base_station_b64}",
+    #                 xref="paper", yref="paper",
+    #                 x=0.77, y=0.75,
+    #                 sizex=0.04, sizey=0.04,
+    #                 xanchor="center", yanchor="middle",
+    #                 layer="above"
+    #             )
+                
+    #             print("[DEBUG] Image added to figure and legend successfully")
+    #         else:
+    #             print("[DEBUG] Image encoding returned None")
+    #     except Exception as e:
+    #         print(f"[DEBUG] Error loading image: {e}")
+    # else:
+    #     print(f"[DEBUG] Image file not found at: {base_station_image_path}")
     
     return fig
 
@@ -635,6 +817,9 @@ if 'env' not in st.session_state:
     st.session_state.devices_with_tasks = set()  # Track which devices have active tasks
     st.session_state.device_inspected = False  # Track if we've inspected device structure yet
     st.session_state.show_edge_details = False  # Toggle for edge server details panel
+    st.session_state.show_env_details = False  # Toggle for mobile device details panel
+    st.session_state.last_processed_tasks = 0  # Tasks processed in most recent fast step
+    st.session_state.current_pending_tasks = 0  # Tasks currently queued for next fast step
 
 # Sidebar for configuration
 st.sidebar.header("⚙️ Configuration")
@@ -648,7 +833,7 @@ with st.sidebar:
     except:
         default_env_args = {
             'num_edges': 3,
-            'num_devices': 30,
+            'num_devices': 20,
             'num_models': 12,
             'local_computing_range': [1, 2],
             'cloud_computing': 5,
@@ -796,6 +981,8 @@ with st.sidebar:
             st.session_state.prev_cache_hits = 0
             st.session_state.prev_total_requests = 0
             st.session_state.devices_with_tasks = set()
+            st.session_state.last_processed_tasks = 0
+            st.session_state.current_pending_tasks = sum(len(edge.task_queue) for edge in st.session_state.env.edge_servers) + len(st.session_state.env.cloud_server.task_queue)
             st.session_state.metrics_history = init_metrics_history()
             st.success("✅ Environment initialized successfully!")
         except Exception as e:
@@ -810,52 +997,129 @@ if not st.session_state.env_initialized:
 else:
     # ==================== NETWORK ARCHITECTURE (Top) ====================
     col_title, col_toggle = st.columns([4, 1])
-    
+
     with col_title:
         st.subheader("🌐 Network Architecture")
-    
+
     with col_toggle:
         st.session_state.show_edge_details = st.checkbox(
             "Show Edge Details",
             value=st.session_state.show_edge_details,
             key="edge_details_toggle"
         )
-    
-    if st.session_state.show_edge_details:
+        st.session_state.show_env_details = st.checkbox(
+            "Show Environment Details",
+            value=st.session_state.show_env_details,
+            key="env_details_toggle"
+        )
+
+    # Determine layout (only once)
+    if st.session_state.show_edge_details or st.session_state.show_env_details:
         col_viz, col_status = st.columns([3, 1])
     else:
         col_viz = st.container()
-    
+        col_status = None
+
+    # ==================== NETWORK VISUALIZATION ====================
     with col_viz:
-        # Create network visualization with stable positioning
+        # ==================== ADD OVERLAY INTO PLOTLY ====================
         fig_network = create_network_visualization(st.session_state.env, seed=42)
-        st.plotly_chart(fig_network, use_container_width=True, key="network_topology", height=1000)
-    
-    if st.session_state.show_edge_details:
+
+        if len(st.session_state.metrics_history.get('timestep', [])) > 0:
+            total_tasks = np.sum(st.session_state.metrics_history['total_tasks_completed'])
+            if total_tasks > 0:
+                avg_accuracy = st.session_state.metrics_history['total_accuracy_weighted'] / total_tasks
+                avg_latency = st.session_state.metrics_history['total_latency'] / total_tasks
+            else:
+                avg_accuracy = 0.0
+                avg_latency = 0.0
+            avg_cache_hit_rate = np.mean(st.session_state.metrics_history['cache_hit_rate'])
+            
+            # Queue counts hidden for demo (queue rendering disabled above).
+            # edge_queue_display_count = 0
+            # for edge in st.session_state.env.edge_servers:
+            #     seen_devices = set()
+            #     for task in edge.task_queue:
+            #         if task.device_id not in seen_devices:
+            #             edge_queue_display_count += 1
+            #             seen_devices.add(task.device_id)
+            # 
+            # cloud_queue_display_count = 0
+            # cloud_seen_devices = set()
+            # for task in st.session_state.env.cloud_server.task_queue:
+            #     if task.device_id not in cloud_seen_devices:
+            #         cloud_queue_display_count += 1
+            #         cloud_seen_devices.add(task.device_id)
+            
+            fig_network.add_annotation(
+                text=(
+                    f"<b>☑ Accuracy:</b> {avg_accuracy:.4f}<br>"
+                    f"<b>⏱ Latency:</b> {avg_latency:.4f}<br>"
+                    f"<b>🎯 Cache Hit:</b> {avg_cache_hit_rate:.2%}"
+                ),
+                xref="paper",
+                yref="paper",
+                x=0.075,   # left
+                y=0.99,   # top
+                showarrow=False,
+                align="left",
+                bordercolor="rgba(0,0,0,0.3)",
+                borderwidth=3,
+                font=dict(size=24)
+            )
+
+        st.plotly_chart(
+            fig_network,
+            use_container_width=True,
+            key="network_topology",
+            height=1000
+        )
+    # ==================== STATUS PANEL ====================
+    if col_status:
         with col_status:
-            with st.expander("🖥️ Edge Server Details", expanded=False):
-                for edge_id, edge in enumerate(st.session_state.env.edge_servers):
-                    with st.expander(f"Edge {edge_id} ({len(edge.cached_models)} models)", expanded=False):
-                        col_c1, col_c2 = st.columns(2)
-                        with col_c1:
-                            st.metric("Computing Power", f"{edge.computing_power/1e9:.2f} GHz")
-                            st.metric("Cached Models", len(edge.cached_models))
-                        with col_c2:
-                            st.metric("Bandwidth", f"{edge.bandwidth/1e6:.2f} MHz")
-                            st.metric("Cache Hits", edge.cache_hits)
-                        
-                        st.metric("Total Requests", edge.total_requests)
-                        if edge.total_requests > 0:
-                            hit_rate = (edge.cache_hits / edge.total_requests) * 100
-                            st.metric("Cache Hit Rate", f"{hit_rate:.2f}%")
-                        else:
-                            st.info("No requests yet")
-                        
-                        if len(edge.cached_models) > 0:
-                            st.write(f"**Cached Model IDs:** {sorted(edge.cached_models)}")
-    
+
+            # -------- Edge Details --------
+            if st.session_state.show_edge_details:
+                with st.expander("🖥️ Edge Server Details", expanded=False):
+                    for edge_id, edge in enumerate(st.session_state.env.edge_servers):
+                        with st.expander(f"Edge {edge_id} ({len(edge.cached_models)} models)", expanded=False):
+                            col_c1, col_c2 = st.columns(2)
+
+                            with col_c1:
+                                st.metric("Computing Power", f"{edge.computing_power/1e9:.2f} GHz")
+                                st.metric("Cached Models", len(edge.cached_models))
+
+                            with col_c2:
+                                st.metric("Bandwidth", f"{edge.bandwidth/1e6:.2f} MHz")
+                                st.metric("Cache Hits", edge.cache_hits)
+
+                            st.metric("Total Requests", edge.total_requests)
+
+                            if edge.total_requests > 0:
+                                hit_rate = (edge.cache_hits / edge.total_requests) * 100
+                                st.metric("Cache Hit Rate", f"{hit_rate:.2f}%")
+                            else:
+                                st.info("No requests yet")
+
+                            if len(edge.cached_models) > 0:
+                                st.write(f"**Cached Model IDs:** {sorted(edge.cached_models)}")
+
+            # -------- Environment Details --------
+            if st.session_state.show_env_details:
+                with st.expander("🖥️ Environment Details", expanded=False):
+                    col1, col2, col3, col4 = st.columns(4)
+
+                    with col1:
+                        st.metric("⏱️ Current Timestep", st.session_state.step_count)
+                    with col2:
+                        st.metric("📱 Mobile Devices", st.session_state.env.num_devices)
+                    with col3:
+                        st.metric("🖥️ Edge Servers", st.session_state.env.num_edges)
+                    with col4:
+                        st.metric("🎬 Models Available", st.session_state.env.num_models)
+
     st.divider()
-    
+
     # ==================== CONTROL PANEL (Always Visible) ====================
     st.subheader("⚙️ Simulation Controls")
     
@@ -902,6 +1166,8 @@ else:
                 st.session_state.current_obs = fast_obs
                 st.session_state.step_count += 1
                 st.session_state.fast_step_in_slow = (st.session_state.fast_step_in_slow + 1) % large_timescale_size
+                st.session_state.last_processed_tasks = int(info.get('num_tasks', 0))
+                st.session_state.current_pending_tasks = sum(len(edge.task_queue) for edge in st.session_state.env.edge_servers) + len(st.session_state.env.cloud_server.task_queue)
                 
                 # Collect devices that have tasks (already populated by step)
                 st.session_state.devices_with_tasks = set()
@@ -920,7 +1186,8 @@ else:
                 print(f"Total devices in environment: {num_total_devices}")
                 print(f"Devices with tasks detected: {len(st.session_state.devices_with_tasks)}")
                 print(f"Device indices with tasks: {sorted(st.session_state.devices_with_tasks)}")
-                print(f"info['num_tasks'] from environment: {info.get('num_tasks', 'N/A')}")
+                print(f"Processed tasks in this step: {st.session_state.last_processed_tasks}")
+                print(f"Pending queue tasks for next step: {st.session_state.current_pending_tasks}")
                 print(f"================================\n")
                 
                 # Extract metrics from the info dict (ground truth from environment)
@@ -975,6 +1242,8 @@ else:
                 st.session_state.prev_total_requests = 0
                 st.session_state.devices_with_tasks = set()
                 st.session_state.device_inspected = False
+                st.session_state.last_processed_tasks = 0
+                st.session_state.current_pending_tasks = sum(len(edge.task_queue) for edge in st.session_state.env.edge_servers) + len(st.session_state.env.cloud_server.task_queue)
                 st.session_state.metrics_history = init_metrics_history()
                 st.rerun()
             except Exception as e:
@@ -1027,6 +1296,8 @@ else:
                     st.session_state.current_obs = fast_obs
                     st.session_state.step_count += 1
                     st.session_state.fast_step_in_slow = (st.session_state.fast_step_in_slow + 1) % large_timescale_size
+                    st.session_state.last_processed_tasks = int(info.get('num_tasks', 0))
+                    st.session_state.current_pending_tasks = sum(len(edge.task_queue) for edge in st.session_state.env.edge_servers) + len(st.session_state.env.cloud_server.task_queue)
                     
                     # Collect devices that have tasks (already populated by step)
                     st.session_state.devices_with_tasks = set()
