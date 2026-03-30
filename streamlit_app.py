@@ -28,24 +28,108 @@ def load_image_as_base64(image_path):
         st.warning(f"⚠️ Image not found at {image_path}")
         return None
 
-def create_network_visualization(_env, seed=42):
+def extract_queue_snapshot(_env, max_tasks_per_queue=12):
+    """Build one normalized queue snapshot used by all task visualizations.
+
+    Returns:
+        tuple:
+            - edge_display_tasks: dict[edge_id] -> list[task]
+            - cloud_display_tasks: list[task]
+            - device_task_types: dict[device_id] -> task_type_id
+
+    Notes:
+        - Keeps at most one queued task per device within each queue.
+        - Applies the same per-queue display cap used by queue boxes.
+        - Device task markers are derived from these displayed tasks so they match.
+    """
+    edge_display_tasks = {edge_id: [] for edge_id in range(_env.num_edges)}
+    cloud_display_tasks = []
+    device_task_types = {}
+
+    # Edge queues
+    for edge_id, edge in enumerate(_env.edge_servers):
+        if not hasattr(edge, 'task_queue') or len(edge.task_queue) == 0:
+            continue
+
+        seen_devices = set()
+        unique_tasks = []
+        for task in edge.task_queue:
+            if task.device_id in seen_devices:
+                continue
+            seen_devices.add(task.device_id)
+            unique_tasks.append(task)
+
+        display_tasks = unique_tasks[:max_tasks_per_queue]
+        edge_display_tasks[edge_id] = display_tasks
+
+        for task in display_tasks:
+            task_type_id = _env.task_types.index(task.task_type) if task.task_type in _env.task_types else -1
+            if task.device_id not in device_task_types:
+                device_task_types[task.device_id] = task_type_id
+
+    # Cloud queue
+    if hasattr(_env, 'cloud_server') and hasattr(_env.cloud_server, 'task_queue'):
+        if len(_env.cloud_server.task_queue) > 0:
+            seen_devices = set()
+            unique_tasks = []
+            for task in _env.cloud_server.task_queue:
+                if task.device_id in seen_devices:
+                    continue
+                seen_devices.add(task.device_id)
+                unique_tasks.append(task)
+
+            cloud_display_tasks = unique_tasks[:max_tasks_per_queue]
+
+            # Edge queues take precedence when a device appears in both.
+            for task in cloud_display_tasks:
+                if task.device_id not in device_task_types:
+                    task_type_id = _env.task_types.index(task.task_type) if task.task_type in _env.task_types else -1
+                    device_task_types[task.device_id] = task_type_id
+
+    return edge_display_tasks, cloud_display_tasks, device_task_types
+
+def create_network_visualization(_env, seed=42, timestep_edge_queues=None, timestep_cloud_queue=None):
     """Create a visualization of the network topology.
     
     Note: Uses deterministic seed for device positioning to keep visualization stable.
     """
     fig = go.Figure()
     
-    # Add edge servers in a circle (needed for positioning before other traces)
-    angles = np.linspace(0, 2*np.pi, _env.num_edges, endpoint=False)
+    # Edge placement:
+    # - keep the hand-tuned 3-edge layout as a special case
+    # - use a scalable ring for all other edge counts
+    angles = np.linspace(0, 2 * np.pi, _env.num_edges, endpoint=False)
     edge_x = np.cos(angles)
     edge_y = np.sin(angles)
-    
-    # Move Edge 2 farther away for better visibility
-    if _env.num_edges > 2:
+
+    if _env.num_edges == 3:
         edge_x[0] = edge_x[0] * 0.25
         edge_x[1] = edge_x[1] * 0.6
         edge_x[2] = edge_x[2] * 0.1
         edge_y[2] = edge_y[2] * 2.0
+        base_icon_size = 100
+        cloud_icon_size = 100
+        edge_icon_size = 88
+        mobile_icon_size = 36
+        x_axis_range = None
+        y_axis_range = [-10, 9]
+    else:
+        # For all non-3-edge cases, place edges on a wide lower semicircle.
+        # This guarantees horizontal spread and avoids icon stacking.
+        arc_angles = np.linspace(np.deg2rad(210), np.deg2rad(330), _env.num_edges)
+        arc_radius = 6.2
+        edge_x = arc_radius * np.cos(arc_angles)
+        edge_y = arc_radius * np.sin(arc_angles) + 2.0
+
+        # Scale icon sizes smoothly with edge count (no abrupt drop at 4 edges).
+        # Start close to the 3-edge sizes, then reduce gradually.
+        delta_edges = max(0, _env.num_edges - 3)
+        base_icon_size = max(66, int(round(90 - 2.0 * delta_edges)))
+        cloud_icon_size = base_icon_size
+        edge_icon_size = max(44, int(round(88 - 2.5 * delta_edges)))
+        mobile_icon_size = max(24, int(round(36 - 1.0 * delta_edges)))
+        x_axis_range = [-8.0, 8.0]
+        y_axis_range = [-10.0, 9.0]
     
     # Add base station center (hidden, will be shown in legend later with image overlay)
     fig.add_trace(go.Scatter(
@@ -64,7 +148,7 @@ def create_network_visualization(_env, seed=42):
         mode='markers+text',
         text=['☁️'],
         textposition='middle center',
-        textfont=dict(size=100),
+        textfont=dict(size=cloud_icon_size),
         marker=dict(size=0, color='#64B5F6'),
         name='☁️ Cloud',
         hovertext=['Cloud'],
@@ -110,12 +194,15 @@ def create_network_visualization(_env, seed=42):
             models_per_row = min(4, num_models)
             num_rows = (num_models + models_per_row - 1) // models_per_row
             
-            # Rectangle dimensions and position surrounding the cached models
-            box_width = models_per_row * 0.015
+            # Rectangle dimensions and position surrounding the cached models.
+            # For non-3-edge layouts, the x-axis span is much wider, so we need
+            # larger horizontal spacing to keep the cached-model circles readable.
+            model_x_spacing = 0.015 if _env.num_edges == 3 else 0.25
+            box_width = models_per_row * model_x_spacing
             box_height = num_rows * 0.75
             box_x = edge_x[edge_id]
             box_y = edge_y[edge_id] + 1.3 + (box_height / 2)
-            if edge_id == 2:  # Move box for Edge 2 farther up to avoid overlap
+            if _env.num_edges == 3 and edge_id == 2:  # Keep legacy tweak only for 3-edge layout
                 box_x -= 0.02
             
             # Draw rectangle box above edge server
@@ -156,150 +243,130 @@ def create_network_visualization(_env, seed=42):
             hoverinfo='text'
         ))
 
-    # # ----- NEW: Add edge task queue boxes (task type only) -----
-    # # Queue visualization is temporarily disabled for demo stability.
-    # show_queue_visualization = False
-    # queue_task_x = []
-    # queue_task_y = []
-    # queue_task_texts = []
-    # queue_task_edge = []
+    # Build one shared queue snapshot to keep queue boxes and device task badges in sync.
+    max_queue_tasks_per_server = 12
+    edge_display_tasks, cloud_display_tasks, device_task_types = extract_queue_snapshot(
+        _env,
+        max_tasks_per_queue=max_queue_tasks_per_server,
+    )
 
-    # # Read tasks directly from edge server task queues
-    # for edge_id, edge in (enumerate(_env.edge_servers) if show_queue_visualization else []):
-    #     if not hasattr(edge, 'task_queue') or len(edge.task_queue) == 0:
-    #         continue
-        
-    #     tasks = edge.task_queue
-        
-    #     # Keep at most one queued task per device to match generator semantics.
-    #     unique_tasks = []
-    #     seen_devices = set()
-    #     for task in tasks:
-    #         if task.device_id in seen_devices:
-    #             continue
-    #         seen_devices.add(task.device_id)
-    #         unique_tasks.append(task)
+    # ----- NEW: Add edge task queue boxes (task type only) -----
+    # Queue visualization is temporarily disabled for demo stability.
+    show_queue_visualization = True
+    queue_task_x = []
+    queue_task_y = []
+    queue_task_texts = []
+    queue_task_edge = []
 
-    #     display_tasks = unique_tasks[:12]
-    #     num_tasks = len(display_tasks)
-    #     if num_tasks == 0:
-    #         continue
+    # Read tasks from the shared snapshot (same source as device task badges)
+    for edge_id, edge in (enumerate(_env.edge_servers) if show_queue_visualization else []):
+        display_tasks = edge_display_tasks.get(edge_id, [])
+        num_tasks = len(display_tasks)
+        if num_tasks == 0:
+            continue
 
-    #     # Match cached-model layout style, but place queue BELOW edge server.
-    #     tasks_per_row = min(4, num_tasks)
-    #     num_rows = (num_tasks + tasks_per_row - 1) // tasks_per_row
-    #     box_width = tasks_per_row * 0.015
-    #     box_height = max(0.75, num_rows * 0.70)
-    #     box_x = edge_x[edge_id]
-    #     box_y = edge_y[edge_id] - 0.9 - (box_height / 2)
+        # Match cached-model layout style, but place queue BELOW edge server.
+        tasks_per_row = min(4, num_tasks)
+        num_rows = (num_tasks + tasks_per_row - 1) // tasks_per_row
+        # Keep queue readable for larger topologies where x-axis spans much wider.
+        queue_x_spacing = 0.015 if _env.num_edges == 3 else 0.25
+        box_width = tasks_per_row * queue_x_spacing
+        box_height = max(0.75, num_rows * 0.70)
+        box_x = edge_x[edge_id]
+        box_y = edge_y[edge_id] - 0.9 - (box_height / 2)
 
-    #     fig.add_shape(
-    #         type='rect',
-    #         x0=box_x - box_width / 2, y0=box_y - box_height / 2,
-    #         x1=box_x + box_width / 2, y1=box_y + box_height / 2,
-    #         line=dict(color='#FF8C00', width=2),
-    #         fillcolor='rgba(255, 140, 0, 0.1)',
-    #         layer='below'
-    #     )
+        fig.add_shape(
+            type='rect',
+            x0=box_x - box_width / 2, y0=box_y - box_height / 2,
+            x1=box_x + box_width / 2, y1=box_y + box_height / 2,
+            line=dict(color='#FF8C00', width=2),
+            fillcolor='rgba(255, 140, 0, 0.1)',
+            layer='below'
+        )
 
-    #     for task_idx, task in enumerate(display_tasks):
-    #         row = task_idx // tasks_per_row
-    #         col = task_idx % tasks_per_row
-    #         tx = box_x - (box_width / 2) + ((col + 0.5) * (box_width / tasks_per_row))
-    #         ty = box_y + (box_height / 2) - 0.35 - (row * 0.7)
-    #         task_type_id = _env.task_types.index(task.task_type) if task.task_type in _env.task_types else -1
+        for task_idx, task in enumerate(display_tasks):
+            row = task_idx // tasks_per_row
+            col = task_idx % tasks_per_row
+            tx = box_x - (box_width / 2) + ((col + 0.5) * (box_width / tasks_per_row))
+            ty = box_y + (box_height / 2) - 0.35 - (row * 0.7)
+            task_type_id = _env.task_types.index(task.task_type) if task.task_type in _env.task_types else -1
 
-    #         queue_task_x.append(tx)
-    #         queue_task_y.append(ty)
-    #         queue_task_texts.append(str(task_type_id))
-    #         queue_task_edge.append(edge_id)
+            queue_task_x.append(tx)
+            queue_task_y.append(ty)
+            queue_task_texts.append(str(task_type_id))
+            queue_task_edge.append(edge_id)
 
-    # if show_queue_visualization and queue_task_x:
-    #     fig.add_trace(go.Scatter(
-    #         x=queue_task_x, y=queue_task_y,
-    #         mode='markers+text',
-    #         marker=dict(size=25, color='#FF6B00', line=dict(color='#CC5500', width=2)),
-    #         text=queue_task_texts,
-    #         textposition='middle center',
-    #         textfont=dict(size=12, color='white', family='Arial Black'),
-    #         name='Edge Queue Task Types',
-    #         showlegend=True,
-    #         hovertext=[f'Edge {edge_id} queue type {tt}' for edge_id, tt in zip(queue_task_edge, queue_task_texts)],
-    #         hoverinfo='text'
-    #     ))
+    if show_queue_visualization and queue_task_x:
+        fig.add_trace(go.Scatter(
+            x=queue_task_x, y=queue_task_y,
+            mode='markers+text',
+            marker=dict(size=25, symbol='square', color='#FF6B00', line=dict(color='#CC5500', width=2)),
+            text=queue_task_texts,
+            textposition='middle center',
+            textfont=dict(size=12, color='white', family='Arial Black'),
+            name='Edge Queue Task Types',
+            showlegend=False,
+            hovertext=[f'Edge {edge_id} queue type {tt}' for edge_id, tt in zip(queue_task_edge, queue_task_texts)],
+            hoverinfo='text'
+        ))
 
-    # # ----- Add cloud server task queue -----
-    # cloud_queue_task_x = []
-    # cloud_queue_task_y = []
-    # cloud_queue_task_texts = []
+    # ----- Add cloud server task queue -----
+    cloud_queue_task_x = []
+    cloud_queue_task_y = []
+    cloud_queue_task_texts = []
     
-    # if show_queue_visualization and hasattr(_env, 'cloud_server') and hasattr(_env.cloud_server, 'task_queue') and len(_env.cloud_server.task_queue) > 0:
-    #     cloud_tasks = _env.cloud_server.task_queue
+    if show_queue_visualization and len(cloud_display_tasks) > 0:
+        display_cloud_tasks = cloud_display_tasks
+        num_cloud_tasks = len(display_cloud_tasks)
         
-    #     # Keep at most one queued task per device
-    #     unique_cloud_tasks = []
-    #     seen_devices = set()
-    #     for task in cloud_tasks:
-    #         if task.device_id in seen_devices:
-    #             continue
-    #         seen_devices.add(task.device_id)
-    #         unique_cloud_tasks.append(task)
-        
-    #     display_cloud_tasks = unique_cloud_tasks[:12]
-    #     num_cloud_tasks = len(display_cloud_tasks)
-        
-    #     if num_cloud_tasks > 0:
-    #         # Place cloud queue above the cloud (at y position around 6.5)
-    #         tasks_per_row = min(4, num_cloud_tasks)
-    #         num_rows = (num_cloud_tasks + tasks_per_row - 1) // tasks_per_row
-    #         box_width = tasks_per_row * 0.015
-    #         box_height = max(0.75, num_rows * 0.70)
-    #         box_x = 0.0  # Center with cloud
-    #         box_y = 6.5 - (box_height / 2)  # Below the cloud emoji position
+        if num_cloud_tasks > 0:
+            # Place cloud queue close to the cloud, slightly left of center
+            # so it does not overlap the base-to-cloud vertical link.
+            tasks_per_row = min(4, num_cloud_tasks)
+            num_rows = (num_cloud_tasks + tasks_per_row - 1) // tasks_per_row
+            queue_x_spacing = 0.015 if _env.num_edges == 3 else 0.25
+            box_width = tasks_per_row * queue_x_spacing
+            box_height = max(0.75, num_rows * 0.70)
+            box_x = -0.032 if _env.num_edges == 3 else -0.5
+            box_y = 7.05 - (box_height / 2)
             
-    #         fig.add_shape(
-    #             type='rect',
-    #             x0=box_x - box_width / 2, y0=box_y - box_height / 2,
-    #             x1=box_x + box_width / 2, y1=box_y + box_height / 2,
-    #             line=dict(color='#6200EA', width=2),  # Purple for cloud
-    #             fillcolor='rgba(98, 0, 234, 0.1)',
-    #             layer='below'
-    #         )
+            fig.add_shape(
+                type='rect',
+                x0=box_x - box_width / 2, y0=box_y - box_height / 2,
+                x1=box_x + box_width / 2, y1=box_y + box_height / 2,
+                line=dict(color='#FF8C00', width=2),
+                fillcolor='rgba(255, 140, 0, 0.1)',
+                layer='below'
+            )
             
-    #         for task_idx, task in enumerate(display_cloud_tasks):
-    #             row = task_idx // tasks_per_row
-    #             col = task_idx % tasks_per_row
-    #             tx = box_x - (box_width / 2) + ((col + 0.5) * (box_width / tasks_per_row))
-    #             ty = box_y + (box_height / 2) - 0.35 - (row * 0.7)
-    #             task_type_id = _env.task_types.index(task.task_type) if task.task_type in _env.task_types else -1
+            for task_idx, task in enumerate(display_cloud_tasks):
+                row = task_idx // tasks_per_row
+                col = task_idx % tasks_per_row
+                tx = box_x - (box_width / 2) + ((col + 0.5) * (box_width / tasks_per_row))
+                ty = box_y + (box_height / 2) - 0.35 - (row * 0.7)
+                task_type_id = _env.task_types.index(task.task_type) if task.task_type in _env.task_types else -1
                 
-    #             cloud_queue_task_x.append(tx)
-    #             cloud_queue_task_y.append(ty)
-    #             cloud_queue_task_texts.append(str(task_type_id))
+                cloud_queue_task_x.append(tx)
+                cloud_queue_task_y.append(ty)
+                cloud_queue_task_texts.append(str(task_type_id))
     
-    # if show_queue_visualization and cloud_queue_task_x:
-    #     fig.add_trace(go.Scatter(
-    #         x=cloud_queue_task_x, y=cloud_queue_task_y,
-    #         mode='markers+text',
-    #         marker=dict(size=25, color='#7B1FA2', line=dict(color='#4A148C', width=2)),
-    #         text=cloud_queue_task_texts,
-    #         textposition='middle center',
-    #         textfont=dict(size=12, color='white', family='Arial Black'),
-    #         name='Cloud Queue Task Types',
-    #         showlegend=True,
-    #         hovertext=[f'Cloud queue type {tt}' for tt in cloud_queue_task_texts],
-    #         hoverinfo='text'
-    #     ))
+    if show_queue_visualization and cloud_queue_task_x:
+        fig.add_trace(go.Scatter(
+            x=cloud_queue_task_x, y=cloud_queue_task_y,
+            mode='markers+text',
+            marker=dict(size=25, symbol='square', color='#FF6B00', line=dict(color='#CC5500', width=2)),
+            text=cloud_queue_task_texts,
+            textposition='middle center',
+            textfont=dict(size=12, color='white', family='Arial Black'),
+            name='Cloud Queue Task Types',
+            showlegend=False,
+            hovertext=[f'Cloud queue type {tt}' for tt in cloud_queue_task_texts],
+            hoverinfo='text'
+        ))
 
-    # Add mobile devices (sampled) with deterministic positioning
-    if _env.num_devices <= 20:
-        device_sample_size = _env.num_devices
-    else:
-        device_sample_size = 20
-    
-    # Use deterministic RNG for stable visualization
-    rng = np.random.default_rng(seed)
-    device_indices = rng.choice(_env.num_devices, min(device_sample_size, _env.num_devices), replace=False)
+    # Add mobile devices with deterministic positioning
+    # Use all devices in the environment (no sampling limitation)
+    device_indices = np.arange(_env.num_devices)
     
     # Group devices by their edge server for better layout
     devices_by_edge = {i: [] for i in range(_env.num_edges)}
@@ -313,26 +380,65 @@ def create_network_visualization(_env, seed=42):
     devices_with_tasks_coords = []
     devices_without_tasks_coords = []
     
+    # Device task types come from the same shared queue snapshot used above.
+    
     # Position devices around each edge server without overlap
+    if _env.num_edges > 1:
+        sorted_edge_x = np.sort(edge_x)
+        min_edge_gap = float(np.min(np.diff(sorted_edge_x)))
+    else:
+        min_edge_gap = 2.0
+
     for edge_id, edge_devices in devices_by_edge.items():
         # Get the actual position of this edge server (using the scaled positions from edge_x, edge_y)
         edge_pos_x = edge_x[edge_id]
         edge_pos_y = edge_y[edge_id]
+
+        # Keep per-edge ordering deterministic for stable redraws.
+        edge_devices = sorted(edge_devices)
         
         for pos_idx, dev_idx in enumerate(edge_devices):
             # Arrange devices in a tight circle around the edge server
             # Devices are evenly distributed by angle to prevent overlap
             device_angle = (pos_idx * 2 * np.pi) / max(len(edge_devices), 1)
             
-            # Tight clustering distance so devices group clearly around their edge server
-            device_distance = 0.5
+            # Position relative to the edge server's actual position.
+            if _env.num_edges == 3:
+                device_distance = 0.5
+                x = edge_pos_x + 0.1 * device_distance * np.cos(device_angle)
+                y = edge_pos_y + 5 * device_distance * np.sin(device_angle) - 5.5
+            else:
+                # For non-3-edge topologies, use centered rows below each edge.
+                # This avoids radial clumping and keeps groups readable as edge count grows.
+                if _env.num_edges >= 8:
+                    x_spacing = 0.28
+                    y_spacing = 0.84
+                elif _env.num_edges >= 6:
+                    x_spacing = 0.33
+                    y_spacing = 0.86
+                elif _env.num_edges >= 4:
+                    x_spacing = 0.40
+                    y_spacing = 1.7
+                else:
+                    x_spacing = 0.44
+                    y_spacing = 1.0
+
+                max_group_width = max(0.85, min(2.2, 0.78 * min_edge_gap))
+                max_cols = int(max_group_width / x_spacing) + 1
+                max_cols = max(2, min(6, max_cols))
+
+                row_idx = pos_idx // max_cols
+                col_idx = pos_idx % max_cols
+
+                remaining = len(edge_devices) - row_idx * max_cols
+                cols_this_row = min(max_cols, remaining)
+                row_center = (cols_this_row - 1) / 2.0
+
+                x = edge_pos_x + (col_idx - row_center) * x_spacing
+                y = edge_pos_y - 3.2 - row_idx * y_spacing
             
-            # Position relative to the edge server's actual position
-            x = edge_pos_x + 0.1 * device_distance * np.cos(device_angle)
-            y = edge_pos_y + 5 * device_distance * np.sin(device_angle) - 4.75  # Shift devices above edge servers for better visibility
-            
-            # Check if THIS DEVICE has active tasks in the current step
-            has_tasks = dev_idx in st.session_state.devices_with_tasks
+            # Check if device has tasks from the queue-based source of truth
+            has_tasks = dev_idx in device_task_types
             
             if has_tasks:
                 devices_with_tasks.append(dev_idx)
@@ -341,23 +447,21 @@ def create_network_visualization(_env, seed=42):
                 devices_without_tasks.append(dev_idx)
                 devices_without_tasks_coords.append((x, y))
     
-    # Prepare task data for drawing tasks BEFORE devices
+    # Prepare task data for drawing tasks BEFORE devices (use queue-based task types)
     task_x_positions = []
     task_y_positions = []
     task_texts = []
     
     for coord_idx, (dev_x, dev_y) in enumerate(devices_with_tasks_coords):
         dev_idx = devices_with_tasks[coord_idx]
-        dev = _env.mobile_devices[dev_idx]
-        if hasattr(dev, 'assigned_tasks') and isinstance(dev.assigned_tasks, list) and len(dev.assigned_tasks) > 0:
-            for task_idx, task in enumerate(dev.assigned_tasks[:3]):
-                task_x = dev_x
-                task_y = dev_y + 0.85
-                task_x_positions.append(task_x)
-                task_y_positions.append(task_y)
-                task_type = getattr(task, 'task_type', 'Unknown')
-                task_type_id = _env.task_types.index(task_type) if task_type in _env.task_types else 'Unknown'
-                task_texts.append(str(task_type_id))
+        # Get task type from queue-based source of truth
+        if dev_idx in device_task_types:
+            task_type_id = device_task_types[dev_idx]
+            task_x = dev_x
+            task_y = dev_y + 0.85
+            task_x_positions.append(task_x)
+            task_y_positions.append(task_y)
+            task_texts.append(str(task_type_id))
     
     # Add tasks BEFORE devices for correct legend order
     if task_x_positions:
@@ -384,7 +488,7 @@ def create_network_visualization(_env, seed=42):
             marker=dict(size=0),
             text=['👤'] * len(devices_without_tasks),
             textposition='middle center',
-            textfont=dict(size=38),
+            textfont=dict(size=mobile_icon_size),
             name='👤 Mobile Devices',
             showlegend=True,
             hovertext=[f'Device {idx}' for idx in devices_without_tasks],
@@ -401,7 +505,7 @@ def create_network_visualization(_env, seed=42):
             marker=dict(size=0),
             text=['👤'] * len(devices_with_tasks),
             textposition='middle center',
-            textfont=dict(size=38),
+            textfont=dict(size=mobile_icon_size),
             name='👤 Mobile Devices (Generating Tasks)',
             showlegend=False,
             hovertext=[f'Device {idx}' for idx in devices_with_tasks],
@@ -414,7 +518,7 @@ def create_network_visualization(_env, seed=42):
         x=[0], y=[3.5],
         mode='markers+text',
         text="🗼",
-        textfont=dict(size=100),
+        textfont=dict(size=base_icon_size),
         marker=dict(size=0, color='#D84315', symbol='circle'),
         name='🗼 Base Station',
         hovertext=['Base Station'],
@@ -428,7 +532,7 @@ def create_network_visualization(_env, seed=42):
         mode='markers+text',
         text=['☁️'],
         textposition='middle center',
-        textfont=dict(size=100),
+        textfont=dict(size=cloud_icon_size),
         marker=dict(size=0, color='#64B5F6'),
         name='☁️ Cloud',
         hovertext=['Cloud'],
@@ -442,7 +546,7 @@ def create_network_visualization(_env, seed=42):
         mode='markers+text',
         text=['🖥️' for _ in range(_env.num_edges)],
         textposition='middle center',
-        textfont=dict(size=100),
+        textfont=dict(size=edge_icon_size),
         marker=dict(size=0, color='#9575CD', opacity=1.0),
         name='🖥️ Edge Servers',
         hovertext=[f'Edge Server {i}' for i in range(_env.num_edges)],
@@ -456,11 +560,11 @@ def create_network_visualization(_env, seed=42):
         showlegend=True,
         hovermode='closest',
         margin=dict(b=20, l=20, r=20, t=20),
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),#, range=[-2.5, 2.5]),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-10, 9]),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=x_axis_range),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=y_axis_range),
         height=1200,
         font=dict(size=50),
-        legend=dict(font=dict(size=18), x=0.75, y=0.95)
+        legend=dict(font=dict(size=18), x=0.75, y=0.99)
     )
     
     # Load and add base station image AFTER layout updates (so it renders on top)
@@ -647,7 +751,7 @@ def create_dual_actions(slow_env, fast_env, slow_agent, fast_agent, slow_obs, fa
                 f"The model was trained on ONE type of observation,\n"
                 f"but you're feeding it a DIFFERENT type of observation.\n\n"
                 f"**Solution:**\n"
-                f"1. Make sure your environment settings match: 3 edges, 30 devices, 12 models\n"
+                f"1. Make sure your environment settings match: 3 edges, 20 devices, 12 models\n"
                 f"2. If still failing, use Random Agents instead\n"
                 f"3. Run: python inspect_models.py (to diagnose model requirements)"
             ) from e
@@ -819,6 +923,7 @@ if 'env' not in st.session_state:
     st.session_state.show_edge_details = False  # Toggle for edge server details panel
     st.session_state.show_env_details = False  # Toggle for mobile device details panel
     st.session_state.last_processed_tasks = 0  # Tasks processed in most recent fast step
+
     st.session_state.current_pending_tasks = 0  # Tasks currently queued for next fast step
 
 # Sidebar for configuration
@@ -853,8 +958,9 @@ with st.sidebar:
         }
     
     # Configuration parameters
-    num_edges = st.number_input("Number of Edge Servers", 1, 10, default_env_args.get('num_edges', 3))
-    num_devices = st.number_input("Number of Mobile Devices", 1, 50, default_env_args.get('num_devices', 20))
+    num_edges = int(st.number_input("Number of Edge Servers", 1, 10, default_env_args.get('num_edges', 3)))
+    default_num_devices = max(int(default_env_args.get('num_devices', 20)), num_edges)
+    num_devices = int(st.number_input("Number of Mobile Devices", min_value=num_edges, max_value=100, value=default_num_devices))
     num_models = st.number_input("Number of Models", 1, 20, default_env_args.get('num_models', 12))
     edge_computing = st.slider("Edge Computing Power (GHz)", 1, 100, default_env_args.get('edge_computing', 20))
     edge_storage = st.slider("Edge Storage (GB)", 1, 100, default_env_args.get('edge_storage', 15))
@@ -900,11 +1006,6 @@ with st.sidebar:
     
     if st.button("🔄 Initialize Environment", use_container_width=True, key="init_btn"):
         try:
-            # Validate configuration
-            if num_devices < num_edges:
-                st.warning(f"⚠️ Number of devices ({num_devices}) should be >= number of edges ({num_edges}). Adjusting...")
-                num_devices = max(num_devices, num_edges)
-            
             agent_type = "Pretrained" if use_pretrained else "Random"
             st.info(f"ℹ️ Initializing with: {num_edges} edges, {num_devices} devices, {num_models} models ({agent_type} agents)")
             
