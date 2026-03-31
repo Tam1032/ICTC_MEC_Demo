@@ -779,6 +779,11 @@ class Environment(gym.Env):
             edge_server.update_request_counter(model_idx)
 
     def step(self, actions):
+        # Clear task queues from previous timestep
+        for edge_server in self.edge_servers:
+            edge_server.clear_task_queue()
+        self.cloud_server.clear_task_queue()
+        
         # Process pending tasks and track waiting times
         tasks_to_process = self.pending_tasks
         num_actions = len(tasks_to_process)
@@ -819,33 +824,45 @@ class Environment(gym.Env):
             if exit_decision >= task.task_type.num_blocks:
                 exit_decision = task.task_type.num_blocks - 1
             task_exit_decisions.append(exit_decision)
-        # Phase 2: Commit all offloadable tasks (for resource allocation)
-        server_assignments = []
-        server_types = []
-        for task, edge_id in zip(tasks_to_process, task_offload_decisions):
-            if edge_id < self.num_edges:
-                edge_server = self.edge_servers[edge_id]
-                edge_server.add_task_to_queue(task)
-                server_assignments.append(edge_server)
-                server_types.append("edge")
-            else:
-                local_edge_id = self.mobile_devices[task.device_id].edge_id
-                server_assignments.append(self.edge_servers[local_edge_id])
-                server_types.append("cloud")
-        # Masked server types based on offloadability
+        
+        # Phase 2: Determine offloadability FIRST, THEN assign to queues
         masked_server_types = []
-        for server_type, task, server in zip(server_types, tasks_to_process, server_assignments):
-            if server_type == "edge":
+        server_assignments = []
+        
+        for task, edge_id in zip(tasks_to_process, task_offload_decisions):
+            server_type = "cloud"  # Default to cloud
+            server = None
+            
+            if edge_id < self.num_edges:
+                # Task wants to offload to edge - check if possible
+                edge_server = self.edge_servers[edge_id]
                 model_idx = self.task_types.index(task.task_type)
                 step_cache_requests += 1
-                offloadable = server.check_offloadable(task, self.task_types)
+                offloadable = edge_server.check_offloadable(task, self.task_types)
                 is_hit = int(offloadable)
                 step_cache_hits += is_hit
-                server.cache_hits = getattr(server, "cache_hits", 0) + is_hit
-                # If not offloadable (i.e., model not cached), offload to cloud instead
-                if not offloadable:
+                edge_server.cache_hits = getattr(edge_server, "cache_hits", 0) + is_hit
+                
+                if offloadable:
+                    # Model is cached on edge - can offload
+                    server_type = "edge"
+                    server = edge_server
+                else:
+                    # Model not cached - must go to cloud
                     server_type = "cloud"
+                    server = self.cloud_server
+            else:
+                # Edge ID >= num_edges means explicit cloud request
+                server_type = "cloud"
+                server = self.cloud_server
+            
             masked_server_types.append(server_type)
+            server_assignments.append(server)
+        
+        # NOW add tasks to queues based on final server assignments
+        for task, server, server_type in zip(tasks_to_process, server_assignments, masked_server_types):
+            server.add_task_to_queue(task)
+        
         # Iterate through each device's action and task
         for exit_decision, edge_id, task, server_type, server in zip(
             task_exit_decisions, task_offload_decisions, tasks_to_process, masked_server_types, server_assignments

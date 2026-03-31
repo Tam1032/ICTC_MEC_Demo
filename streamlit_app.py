@@ -112,7 +112,7 @@ def create_network_visualization(_env, seed=42, timestep_edge_queues=None, times
         edge_icon_size = 88
         mobile_icon_size = 36
         x_axis_range = None
-        y_axis_range = [-10, 9]
+        y_axis_range = [-10.15, 9]
     else:
         # For all non-3-edge cases, place edges on a wide lower semicircle.
         # This guarantees horizontal spread and avoids icon stacking.
@@ -273,7 +273,7 @@ def create_network_visualization(_env, seed=42, timestep_edge_queues=None, times
         box_width = tasks_per_row * queue_x_spacing
         box_height = max(0.75, num_rows * 0.70)
         box_x = edge_x[edge_id]
-        box_y = edge_y[edge_id] - 0.9 - (box_height / 2)
+        box_y = edge_y[edge_id] - 0.75 - (box_height / 2)
 
         fig.add_shape(
             type='rect',
@@ -406,7 +406,7 @@ def create_network_visualization(_env, seed=42, timestep_edge_queues=None, times
             if _env.num_edges == 3:
                 device_distance = 0.5
                 x = edge_pos_x + 0.1 * device_distance * np.cos(device_angle)
-                y = edge_pos_y + 5 * device_distance * np.sin(device_angle) - 5.5
+                y = edge_pos_y + 5 * device_distance * np.sin(device_angle) - 5.8
             else:
                 # For non-3-edge topologies, use centered rows below each edge.
                 # This avoids radial clumping and keeps groups readable as edge count grows.
@@ -435,7 +435,7 @@ def create_network_visualization(_env, seed=42, timestep_edge_queues=None, times
                 row_center = (cols_this_row - 1) / 2.0
 
                 x = edge_pos_x + (col_idx - row_center) * x_spacing
-                y = edge_pos_y - 3.2 - row_idx * y_spacing
+                y = edge_pos_y - 3.5 - row_idx * y_spacing
             
             # Check if device has tasks from the queue-based source of truth
             has_tasks = dev_idx in device_task_types
@@ -892,13 +892,13 @@ def init_metrics_history():
 
 # Page configuration
 st.set_page_config(
-    page_title="MEC Environment Visualization",
+    page_title="Edge Intelligence Optimization Visualization",
     page_icon="📡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("📡 Mobile Edge Computing (MEC) Environment Visualizer")
+st.title("Edge Intelligence Optimization Visualization")
 
 # Initialize session state
 if 'env' not in st.session_state:
