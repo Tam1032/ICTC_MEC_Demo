@@ -892,13 +892,13 @@ def init_metrics_history():
 
 # Page configuration
 st.set_page_config(
-    page_title="Edge Intelligence Optimization Visualization",
+    page_title="Optimizing Accuracy–Latency Trade-offs for Edge AI Inference",
     page_icon="📡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("Edge Intelligence Optimization Visualization")
+st.title("Optimizing Accuracy–Latency Trade-offs for Edge AI Inference")
 
 # Initialize session state
 if 'env' not in st.session_state:
