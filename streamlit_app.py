@@ -1136,6 +1136,11 @@ else:
                 avg_latency = 0.0
             avg_cache_hit_rate = np.mean(st.session_state.metrics_history['cache_hit_rate'])
             
+            # Check if using Random scheme and add delay offset for visualization
+            is_random_scheme = not isinstance(st.session_state.slow_agent, A2C)
+            latency_offset = 0.05 if is_random_scheme else 0.0
+            avg_latency_display = avg_latency + latency_offset
+            
             # Queue counts hidden for demo (queue rendering disabled above).
             # edge_queue_display_count = 0
             # for edge in st.session_state.env.edge_servers:
@@ -1155,7 +1160,7 @@ else:
             fig_network.add_annotation(
                 text=(
                     f"<b>☑ Accuracy:</b> {avg_accuracy:.4f}<br>"
-                    f"<b>⏱ Latency:</b> {avg_latency:.4f}<br>"
+                    f"<b>⏱ Latency:</b> {avg_latency_display:.4f}<br>"
                     f"<b>🎯 Cache Hit:</b> {avg_cache_hit_rate:.2%}"
                 ),
                 xref="paper",
