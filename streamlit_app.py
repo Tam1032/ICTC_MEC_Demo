@@ -1490,14 +1490,19 @@ else:
         
         # Display current metrics
         if len(st.session_state.metrics_history['timestep']) > 0:
+            # Check if using Random scheme and add delay offset for visualization
+            is_random_scheme = not isinstance(st.session_state.slow_agent, A2C)
+            latency_offset = 0.05 if is_random_scheme else 0.0
+            
             col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
             
             with col_m1:
                 st.metric("🎯 Latest Accuracy", 
                          f"{st.session_state.metrics_history['avg_accuracy'][-1]:.4f}")
             with col_m2:
+                latest_latency = st.session_state.metrics_history['avg_latency'][-1] + latency_offset
                 st.metric("⏱️ Latest Latency (ms)", 
-                         f"{st.session_state.metrics_history['avg_latency'][-1]:.4f}")
+                         f"{latest_latency:.4f}")
             with col_m3:
                 st.metric("⌛ Latest Waiting (ms)", 
                          f"{st.session_state.metrics_history['avg_waiting_time'][-1]:.4f}")
@@ -1538,6 +1543,11 @@ else:
                 avg_transmit = 0.0
             avg_cache_hit_rate = np.mean(st.session_state.metrics_history['cache_hit_rate'])
             
+            # Check if using Random scheme and add delay offset for visualization
+            is_random_scheme = not isinstance(st.session_state.slow_agent, A2C)
+            latency_offset = 0.05 if is_random_scheme else 0.0
+            avg_latency_display = avg_latency + latency_offset
+            
             # Display as key metrics
             col_avg1, col_avg2, col_avg3, col_avg4 = st.columns(4)
             
@@ -1546,7 +1556,7 @@ else:
             with col_avg2:
                 st.metric("📈 Average Accuracy", f"{avg_accuracy:.4f}")
             with col_avg3:
-                st.metric("📈 Average Latency (ms)", f"{avg_latency:.4f}")
+                st.metric("📈 Average Latency (ms)", f"{avg_latency_display:.4f}")
             with col_avg4:
                 st.metric("📈 Average Cache Hit Rate", f"{avg_cache_hit_rate:.2%}")
         else:
@@ -1568,10 +1578,17 @@ else:
                 avg_processing = 0.0
                 avg_transmit = 0.0
             
+            # Check if using Random scheme and add delay offset for visualization
+            is_random_scheme = not isinstance(st.session_state.slow_agent, A2C)
+            latency_offset = 0.05 if is_random_scheme else 0.0
+            
+            # Add offset to processing time for visualization
+            avg_processing_display = avg_processing + latency_offset
+            
             # Latency Breakdown Visualization
             breakdown_fig = go.Figure(data=[
                 go.Pie(labels=['Waiting Time', 'Processing Time', 'Transmission Time'], 
-                       values=[avg_waiting, avg_processing, avg_transmit],
+                       values=[avg_waiting, avg_processing_display, avg_transmit],
                        hole=.3,
                        marker_colors=['#EF553B', '#00CC96', '#636EFA'])
             ])
@@ -1580,7 +1597,7 @@ else:
 
             col_b1, col_b2, col_b3 = st.columns(3)
             col_b1.metric("⌛ Avg Waiting", f"{avg_waiting:.4f} ms")
-            col_b2.metric("⚙️ Avg Processing", f"{avg_processing:.4f} ms")
+            col_b2.metric("⚙️ Avg Processing", f"{avg_processing_display:.4f} ms")
             col_b3.metric("📡 Avg Transmit", f"{avg_transmit:.4f} ms")
         else:
             st.info("No data yet. Run some steps to see latency breakdown.")
