@@ -540,18 +540,15 @@ def create_network_visualization(_env, seed=42, timestep_edge_queues=None, times
         showlegend=True
     ))
     
-    # Add edge servers to legend (after tasks for proper ordering)
+    # Keep edge hover labels without adding an edge icon entry to the legend.
     fig.add_trace(go.Scatter(
         x=edge_x, y=edge_y,
-        mode='markers+text',
-        text=['🖥️' for _ in range(_env.num_edges)],
-        textposition='middle center',
-        textfont=dict(size=edge_icon_size),
-        marker=dict(size=0, color='#9575CD', opacity=1.0),
-        name='🖥️ Edge Servers',
+        mode='markers',
+        marker=dict(size=20, color='rgba(0, 0, 0, 0)'),
+        name='Edge Servers',
         hovertext=[f'Edge Server {i}' for i in range(_env.num_edges)],
         hoverinfo='text',
-        showlegend=True
+        showlegend=False
     ))
     
     fig.update_layout(
@@ -567,44 +564,26 @@ def create_network_visualization(_env, seed=42, timestep_edge_queues=None, times
         legend=dict(font=dict(size=18), x=0.75, y=0.99)
     )
     
-    # Load and add base station image AFTER layout updates (so it renders on top)
-    # base_station_image_path = os.path.abspath("base_station_icon.png")
-    # print(f"[DEBUG] Looking for image at: {base_station_image_path}")
-    # print(f"[DEBUG] Does file exist? {os.path.exists(base_station_image_path)}")
-    
-    # if os.path.exists(base_station_image_path):
-    #     try:
-    #         base_station_b64 = load_image_as_base64(base_station_image_path)
-    #         if base_station_b64:
-    #             print(f"[DEBUG] Image loaded and encoded successfully (size: {len(base_station_b64)} bytes)")
-                
-    #             # Add image on the plot at base station location
-    #             fig.add_layout_image(
-    #                 source=f"data:image/png;base64,{base_station_b64}",
-    #                 xref="x", yref="y",
-    #                 x=0, y=3.5,
-    #                 sizex=1.2, sizey=1.2,
-    #                 xanchor="center", yanchor="middle",
-    #                 layer="above"
-    #             )
-                
-    #             # Also add image to legend area
-    #             fig.add_layout_image(
-    #                 source=f"data:image/png;base64,{base_station_b64}",
-    #                 xref="paper", yref="paper",
-    #                 x=0.77, y=0.75,
-    #                 sizex=0.04, sizey=0.04,
-    #                 xanchor="center", yanchor="middle",
-    #                 layer="above"
-    #             )
-                
-    #             print("[DEBUG] Image added to figure and legend successfully")
-    #         else:
-    #             print("[DEBUG] Image encoding returned None")
-    #     except Exception as e:
-    #         print(f"[DEBUG] Error loading image: {e}")
-    # else:
-    #     print(f"[DEBUG] Image file not found at: {base_station_image_path}")
+    # Use the base station image as the edge server icon on the plot.
+    edge_icon_path = os.path.abspath("base_station_icon.png")
+    edge_icon_b64 = load_image_as_base64(edge_icon_path) if os.path.exists(edge_icon_path) else None
+    if edge_icon_b64:
+        # Make edge icons significantly larger for visibility.
+        edge_img_size = 1.75 if _env.num_edges == 3 else 3.0
+        edge_y_offset = 0.35
+        for i in range(_env.num_edges):
+            fig.add_layout_image(
+                source=f"data:image/png;base64,{edge_icon_b64}",
+                xref="x",
+                yref="y",
+                x=float(edge_x[i]),
+                y=float(edge_y[i] + edge_y_offset),
+                sizex=edge_img_size,
+                sizey=edge_img_size,
+                xanchor="center",
+                yanchor="middle",
+                layer="above"
+            )
     
     return fig
 
