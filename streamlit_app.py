@@ -9,6 +9,7 @@ import glob
 import os
 import traceback
 import base64
+from datetime import datetime, timezone
 from PIL import Image
 from MEC_Environment.gym_environment import Environment
 from MEC_Environment.dual_timescale_wrapper import MECDualTimeScaleEnv, SlowEnvWrapper, FastEnvWrapper
@@ -27,6 +28,109 @@ def load_image_as_base64(image_path):
     except FileNotFoundError:
         st.warning(f"⚠️ Image not found at {image_path}")
         return None
+
+
+RUN_HISTORY_DIR = os.path.join(os.path.dirname(__file__), "history_logs")
+RUN_HISTORY_FILE = os.path.join(RUN_HISTORY_DIR, "run_history.jsonl")
+
+
+def _to_json_safe(value):
+    """Recursively convert values so they can be written as JSON."""
+    if isinstance(value, dict):
+        return {str(key): _to_json_safe(inner_value) for key, inner_value in value.items()}
+    if isinstance(value, list):
+        return [_to_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_to_json_safe(item) for item in value]
+    if isinstance(value, set):
+        return sorted(_to_json_safe(item) for item in value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, (datetime,)):
+        return value.isoformat()
+    return value
+
+
+def ensure_run_history_dir():
+    os.makedirs(RUN_HISTORY_DIR, exist_ok=True)
+
+
+def start_run_tracking(run_config):
+    st.session_state.run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+    st.session_state.run_started_at = datetime.now(timezone.utc).isoformat()
+    st.session_state.run_config = _to_json_safe(run_config)
+    st.session_state.run_saved = False
+
+
+def build_run_history_record(status):
+    metrics_history = st.session_state.get('metrics_history', init_metrics_history())
+    total_tasks = int(metrics_history.get('total_tasks_completed', 0) or 0)
+    total_steps = len(metrics_history.get('timestep', []))
+    agent_mode = "Pretrained" if isinstance(st.session_state.get('slow_agent'), A2C) else "Random"
+
+    if metrics_history.get('total_reward'):
+        avg_reward = float(np.mean(metrics_history['total_reward']))
+    else:
+        avg_reward = 0.0
+
+    if total_tasks > 0:
+        avg_accuracy = float(metrics_history['total_accuracy_weighted'] / total_tasks)
+        avg_latency = float(metrics_history['total_latency'] / total_tasks)
+        avg_waiting = float(metrics_history['total_waiting_time'] / total_tasks)
+        avg_processing = float(metrics_history['total_processing_time'] / total_tasks)
+        avg_transmit = float(metrics_history['total_transmit_latency'] / total_tasks)
+    else:
+        avg_accuracy = 0.0
+        avg_latency = 0.0
+        avg_waiting = 0.0
+        avg_processing = 0.0
+        avg_transmit = 0.0
+
+    if metrics_history.get('cache_hit_rate'):
+        avg_cache_hit_rate = float(np.mean(metrics_history['cache_hit_rate']))
+    else:
+        avg_cache_hit_rate = 0.0
+
+    return {
+        "run_id": st.session_state.get("run_id"),
+        "status": status,
+        "started_at": st.session_state.get("run_started_at"),
+        "ended_at": datetime.now(timezone.utc).isoformat(),
+        "agent_mode": agent_mode,
+        "config": _to_json_safe(st.session_state.get("run_config", {})),
+        "summary": {
+            "steps": total_steps,
+            "tasks_completed": total_tasks,
+            "average_reward": avg_reward,
+            "average_accuracy": avg_accuracy,
+            "average_latency": avg_latency,
+            "average_waiting_time": avg_waiting,
+            "average_processing_time": avg_processing,
+            "average_transmit_latency": avg_transmit,
+            "average_cache_hit_rate": avg_cache_hit_rate,
+        },
+        "metrics_history": _to_json_safe(metrics_history),
+    }
+
+
+def append_run_history(record):
+    ensure_run_history_dir()
+    with open(RUN_HISTORY_FILE, 'a', encoding='utf-8') as history_file:
+        history_file.write(json.dumps(record, ensure_ascii=False) + '\n')
+
+
+def finalize_current_run(status):
+    metrics_history = st.session_state.get('metrics_history')
+    if not metrics_history or not metrics_history.get('timestep'):
+        return False
+    if st.session_state.get('run_saved'):
+        return False
+
+    append_run_history(build_run_history_record(status))
+    st.session_state.run_saved = True
+    return True
 
 def extract_queue_snapshot(_env, max_tasks_per_queue=12):
     """Build one normalized queue snapshot used by all task visualizations.
@@ -985,6 +1089,9 @@ with st.sidebar:
     
     if st.button("🔄 Initialize Environment", use_container_width=True, key="init_btn"):
         try:
+            if st.session_state.get('env_initialized'):
+                finalize_current_run("reinitialized")
+
             agent_type = "Pretrained" if use_pretrained else "Random"
             st.info(f"ℹ️ Initializing with: {num_edges} edges, {num_devices} devices, {num_models} models ({agent_type} agents)")
             
@@ -1055,6 +1162,27 @@ with st.sidebar:
             for dev in st.session_state.env.mobile_devices:
                 if hasattr(dev, 'reset_tasks'):
                     dev.reset_tasks()
+
+            selected_slow_model = os.path.basename(slow_model_path) if slow_model_path else None
+            selected_fast_model = os.path.basename(fast_model_path) if fast_model_path else None
+            run_config = {
+                "num_edges": num_edges,
+                "num_devices": num_devices,
+                "num_models": num_models,
+                "edge_computing": edge_computing,
+                "edge_storage": edge_storage,
+                "task_arrival_rate": task_arrival_rate,
+                "zipf_a": zipf_a,
+                "seed": seed,
+                "agent_type": agent_type,
+                "use_pretrained": use_pretrained,
+                "slow_model_path": slow_model_path,
+                "fast_model_path": fast_model_path,
+                "selected_slow_model": selected_slow_model,
+                "selected_fast_model": selected_fast_model,
+            }
+
+            start_run_tracking(run_config)
             
             st.session_state.env_initialized = True
             st.session_state.step_count = 0
@@ -1311,6 +1439,8 @@ else:
     with col_btn2:
         if st.button("🔄 Reset Environment", use_container_width=True, key="reset_btn"):
             try:
+                finalize_current_run("reset")
+
                 # Reset wrapped environments
                 st.session_state.slow_obs, _ = st.session_state.slow_env.reset()
                 st.session_state.fast_obs, _ = st.session_state.fast_env.reset()
@@ -1330,11 +1460,23 @@ else:
                 st.session_state.last_processed_tasks = 0
                 st.session_state.current_pending_tasks = sum(len(edge.task_queue) for edge in st.session_state.env.edge_servers) + len(st.session_state.env.cloud_server.task_queue)
                 st.session_state.metrics_history = init_metrics_history()
+                start_run_tracking(st.session_state.get('run_config', {}))
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ Error resetting environment: {str(e)}")
     
     with col_btn3:
+        has_run_data = len(st.session_state.metrics_history.get('timestep', [])) > 0
+        save_disabled = (not has_run_data) or st.session_state.get('run_saved', False)
+        if st.button("💾 Save Current Run", use_container_width=True, key="save_run_btn", disabled=save_disabled):
+            try:
+                if finalize_current_run("saved"):
+                    st.success("✅ Current run saved to history!")
+                else:
+                    st.info("No new run data to save.")
+            except Exception as e:
+                st.error(f"❌ Error saving run: {str(e)}")
+
         num_auto_steps = st.number_input("Steps to auto-run", 1, 10000, 10, key="auto_steps")
         if st.button("⚡ Run Multiple Steps", use_container_width=True, key="auto_btn"):
             try:
