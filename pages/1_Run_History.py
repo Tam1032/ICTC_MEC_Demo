@@ -57,7 +57,7 @@ def records_to_dataframe(records):
             "run_id": record.get("run_id", ""),
             "timestamp": timestamp_display,
             "timestamp_sort": timestamp_dt,
-            "reinforcement_learning": "Enabled" if agent_mode == "Pretrained" else "Disabled",
+            "method": "Deep Reinforcement Learning" if agent_mode == "Pretrained" else "Random Scheme",
             "seed": config.get("seed", ""),
             "num_edges": config.get("num_edges", ""),
             "num_devices": config.get("num_devices", ""),
@@ -103,8 +103,8 @@ def highlight_avg_columns(dataframe):
     for column in avg_columns:
         if column in styles.columns:
             styles[column] = "background-color: #E8F8F0; font-weight: 700; color: #0B5D3B;"
-    if "Reinforcement Learning" in styles.columns:
-        styles["Reinforcement Learning"] = "font-weight: 700; background-color: #EEF4FF;"
+    if "Optimizer" in styles.columns:
+        styles["Optimizer"] = "font-weight: 700; background-color: #EEF4FF;"
     return styles
 
 
@@ -144,7 +144,7 @@ if "timestamp_sort" in table_df.columns:
 display_names = {
     "run_id": "Run ID",
     "timestamp": "Timestamp",
-    "reinforcement_learning": "Reinforcement Learning",
+    "method": "Optimizer",
     "seed": "Seed",
     "num_edges": "Edges",
     "num_devices": "Devices",
@@ -161,7 +161,10 @@ table_df = table_df.rename(columns=display_names)
 
 
 st.dataframe(
-    table_df.style.apply(highlight_avg_columns, axis=None),
+    table_df.style.apply(highlight_avg_columns, axis=None).set_table_styles([
+        {"selector": "th", "props": [("font-size", "17px")]},
+        {"selector": "td", "props": [("font-size", "16px")]},
+    ]),
     use_container_width=True,
     hide_index=True,
 )
