@@ -2,6 +2,7 @@ import json
 import os
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 
@@ -43,8 +44,18 @@ def records_to_dataframe(records):
     for record in records:
         config = record.get("config", {})
         summary = record.get("summary", {})
-        agent_mode = record.get("agent_mode", "")
+        agent_mode = str(record.get("agent_mode", ""))
         timestamp = record.get("started_at") or record.get("ended_at") or ""
+
+        method_display = {
+            "Pretrained Models": "Pretrained Models",
+            "Pretrained": "Pretrained Models",
+            "Cloud Only": "Cloud Only",
+            "Local Offload": "Local Offload",
+            "Local Edge Only": "Local Offload",
+            "Random": "Random",
+            "": "Random",
+        }.get(agent_mode, agent_mode)
 
         try:
             timestamp_dt = pd.to_datetime(timestamp, utc=True)
@@ -57,7 +68,7 @@ def records_to_dataframe(records):
             "run_id": record.get("run_id", ""),
             "timestamp": timestamp_display,
             "timestamp_sort": timestamp_dt,
-            "method": "Deep Reinforcement Learning" if agent_mode == "Pretrained" else "Random Scheme",
+            "method": method_display,
             "seed": config.get("seed", ""),
             "num_edges": config.get("num_edges", ""),
             "num_devices": config.get("num_devices", ""),
@@ -80,10 +91,19 @@ if not records:
     st.info("No saved runs found yet. Click 'Save Current Run' in the main page after running the simulation.")
     st.stop()
 
+# Initialize session state for checkboxes
+if 'selected_runs' not in st.session_state:
+    st.session_state.selected_runs = {}
 
 df = records_to_dataframe(records)
 if "timestamp_sort" in df.columns:
     df = df.sort_values("timestamp_sort", ascending=False, na_position="last").reset_index(drop=True)
+
+# Initialize checkboxes for all runs
+for idx, row in df.iterrows():
+    run_id = row['run_id']
+    if run_id not in st.session_state.selected_runs:
+        st.session_state.selected_runs[run_id] = False
 
 avg_columns = ["Avg Reward", "Avg Accuracy", "Avg Latency"]
 config_columns = [
@@ -109,7 +129,7 @@ def highlight_avg_columns(dataframe):
 
 
 hide_config_columns = st.checkbox("Hide configuration columns", value=True)
-st.caption("Key results are highlighted for demo readability.")
+st.caption("Key results are highlighted for demo readability. Check the runs you want to compare.")
 
 with st.expander("Manage Records (optional)", expanded=False):
     run_ids = [str(record.get("run_id", "")) for record in records]
@@ -159,12 +179,142 @@ display_names = {
 }
 table_df = table_df.rename(columns=display_names)
 
+# Create table with embedded compare tick as the first column
+st.subheader("📊 Run History")
+table_display_df = table_df.copy()
+table_display_df.insert(0, "Compare", False)
 
-st.dataframe(
-    table_df.style.apply(highlight_avg_columns, axis=None).set_table_styles([
-        {"selector": "th", "props": [("font-size", "17px")]},
-        {"selector": "td", "props": [("font-size", "16px")]},
-    ]),
+edited_table_df = st.data_editor(
+    table_display_df,
     use_container_width=True,
     hide_index=True,
+    key="run_history_editor",
+    disabled=[col for col in table_display_df.columns if col != "Compare"],
+    column_config={
+        "Compare": st.column_config.CheckboxColumn("Compare"),
+    },
 )
+
+# ==================== COMPARISON SECTION ====================
+st.divider()
+st.subheader("📊 Compare Selected Runs")
+
+# Get selected runs from the Compare column in the table
+selected_run_ids = []
+if "Run ID" in edited_table_df.columns:
+    selected_run_ids = edited_table_df.loc[edited_table_df["Compare"], "Run ID"].astype(str).tolist()
+    selected_run_ids = [run_id for run_id in selected_run_ids if run_id]
+
+selected_records = [record for record in records if str(record.get("run_id", "")) in selected_run_ids]
+
+# Generate comparison plots if runs are selected
+if selected_records:
+    # Prepare data for comparison
+    comparison_data = []
+    for record in selected_records:
+        method = str(record.get("agent_mode", "")).strip()
+        
+        # Normalize method display name
+        method_display = {
+            "Pretrained Models": "Pretrained Models",
+            "Pretrained": "Pretrained Models",
+            "Cloud Only": "Cloud Only",
+            "Local Offload": "Local Offload",
+            "Local Edge Only": "Local Offload",
+            "Random": "Random",
+            "": "Random",
+        }.get(method, method)
+        
+        summary = record.get("summary", {})
+        config = record.get("config", {})
+        run_id = record.get("run_id", "")
+        
+        comparison_data.append({
+            "method": method_display,
+            "run_id": run_id[:8],  # Short run ID
+            "avg_accuracy": summary.get("average_accuracy", 0.0),
+            "avg_latency": summary.get("average_latency", 0.0),
+            "avg_reward": summary.get("average_reward", 0.0),
+            "avg_cache_hit_rate": summary.get("average_cache_hit_rate", 0.0),
+            "num_edges": config.get("num_edges", ""),
+            "num_devices": config.get("num_devices", ""),
+        })
+    
+    comparison_df = pd.DataFrame(comparison_data)
+    
+    # Create comparison plots
+    col_plot1, col_plot2 = st.columns(2)
+    
+    with col_plot1:
+        st.subheader("📈 Accuracy Comparison")
+        
+        fig_accuracy = go.Figure()
+        
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+        
+        for color_idx, row in enumerate(comparison_df.to_dict("records")):
+            fig_accuracy.add_trace(go.Bar(
+                x=[row["method"]],
+                y=[row["avg_accuracy"]],
+                name=f"{row['method']} ({row['run_id']})",
+                text=f"{row['avg_accuracy']:.4f}",
+                textposition="outside",
+                textfont=dict(size=18, color='black', family='Arial'),
+                marker=dict(
+                    color=colors[color_idx % len(colors)],
+                    line=dict(color='black', width=1)
+                ),
+                hovertemplate=f"<b>{row['method']}</b><br>Accuracy: {row['avg_accuracy']:.4f}<extra></extra>"
+            ))
+        
+        accuracy_max = comparison_df['avg_accuracy'].max() if len(comparison_df) > 0 else 1.0
+        accuracy_top = max(accuracy_max + 0.05, 1.0)
+        fig_accuracy.update_layout(
+            xaxis_title="Method",
+            yaxis_title="Average Accuracy",
+            yaxis=dict(range=[0.5, accuracy_top]),
+            height=600,
+            showlegend=False,
+            hovermode='x unified',
+            margin=dict(b=50, l=50, r=50, t=50)
+        )
+        
+        st.plotly_chart(fig_accuracy, use_container_width=True)
+    
+    with col_plot2:
+        st.subheader("⏱️ Latency Comparison")
+        
+        fig_latency = go.Figure()
+        
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+        
+        for color_idx, row in enumerate(comparison_df.to_dict("records")):
+            fig_latency.add_trace(go.Bar(
+                x=[row["method"]],
+                y=[row["avg_latency"]],
+                name=f"{row['method']} ({row['run_id']})",
+                text=f"{row['avg_latency']:.4f}",
+                textposition="outside",
+                textfont=dict(size=18, color='black', family='Arial'),
+                marker=dict(
+                    color=colors[color_idx % len(colors)],
+                    line=dict(color='black', width=1)
+                ),
+                hovertemplate=f"<b>{row['method']}</b><br>Latency: {row['avg_latency']:.4f}<extra></extra>"
+            ))
+        
+        latency_max = comparison_df['avg_latency'].max() if len(comparison_df) > 0 else 1.0
+        latency_top = max(latency_max + 0.05, 0.3)
+        fig_latency.update_layout(
+            xaxis_title="Method",
+            yaxis_title="Average Latency (ms)",
+            yaxis=dict(range=[0.3, latency_top]),
+            height=600,
+            showlegend=False,
+            hovermode='x unified',
+            margin=dict(b=50, l=50, r=50, t=50)
+        )
+        
+        st.plotly_chart(fig_latency, use_container_width=True)
+else:
+    st.info("Select at least one run from the table above to view comparison plots.")

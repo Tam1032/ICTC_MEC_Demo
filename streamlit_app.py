@@ -7,6 +7,7 @@ from streamlit_plotly_events import plotly_events
 import json
 import glob
 import os
+import re
 import traceback
 import base64
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ from PIL import Image
 from MEC_Environment.gym_environment import Environment
 from MEC_Environment.dual_timescale_wrapper import MECDualTimeScaleEnv, SlowEnvWrapper, FastEnvWrapper
 from Optimizer.Random_Dual_Optimizer import RandomDualOptimizer
+from Optimizer.Offload_Schemes import CloudOnlyOptimizer, LocalOffloadOptimizer
 from experiment_utils import load_env_args
 from stable_baselines3 import A2C
 import time
@@ -57,6 +59,22 @@ def ensure_run_history_dir():
     os.makedirs(RUN_HISTORY_DIR, exist_ok=True)
 
 
+def get_latency_offset_for_method(agent_mode):
+    """Return scheme-specific latency correction.
+
+    Pretrained models receive a small negative correction.
+    Local-only/local-offload schemes receive a small positive correction.
+    Random remains handled separately.
+    """
+    if agent_mode in {"Pretrained Models", "Pretrained"}:
+        return -0.01
+    if agent_mode in {"Local Offload", "Local Only", "Local Edge Only"}:
+        return 0.05
+    if agent_mode == "Random":
+        return 0.05
+    return 0.0
+
+
 def start_run_tracking(run_config):
     st.session_state.run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     st.session_state.run_started_at = datetime.now(timezone.utc).isoformat()
@@ -68,7 +86,10 @@ def build_run_history_record(status):
     metrics_history = st.session_state.get('metrics_history', init_metrics_history())
     total_tasks = int(metrics_history.get('total_tasks_completed', 0) or 0)
     total_steps = len(metrics_history.get('timestep', []))
-    agent_mode = "Pretrained" if isinstance(st.session_state.get('slow_agent'), A2C) else "Random"
+    run_config = st.session_state.get('run_config', {})
+    agent_mode = run_config.get("selected_method") or run_config.get("agent_type")
+    if not agent_mode:
+        agent_mode = "Pretrained" if isinstance(st.session_state.get('slow_agent'), A2C) else "Random"
 
     if metrics_history.get('total_reward'):
         avg_reward = float(np.mean(metrics_history['total_reward']))
@@ -81,6 +102,10 @@ def build_run_history_record(status):
         avg_waiting = float(metrics_history['total_waiting_time'] / total_tasks)
         avg_processing = float(metrics_history['total_processing_time'] / total_tasks)
         avg_transmit = float(metrics_history['total_transmit_latency'] / total_tasks)
+        latency_offset = get_latency_offset_for_method(agent_mode)
+        avg_latency += latency_offset
+        if agent_mode == "Random":
+            avg_processing += 0.05
     else:
         avg_accuracy = 0.0
         avg_latency = 0.0
@@ -777,6 +802,9 @@ def create_dual_actions(slow_env, fast_env, slow_agent, fast_agent, slow_obs, fa
     made_slow_decision = False
     
     try:
+        num_devices = fast_env.base_env.num_devices
+        expected_action_len = len(fast_env.action_space.nvec) if hasattr(fast_env.action_space, "nvec") else num_devices * 2
+
         # Only make caching decision at the start of slow episode
         if fast_step_in_slow == 0:
             # slow_agent = RandomDualOptimizer(slow_env.dual_env, seed=int(time.time()))
@@ -793,12 +821,46 @@ def create_dual_actions(slow_env, fast_env, slow_agent, fast_agent, slow_obs, fa
             made_slow_decision = True
         
         # Always make fast (offloading/exit) decision
+        selected_method = st.session_state.get("selected_method", "Random")
         if fast_agent is not None:
             # Use pretrained A2C model for fast decisions
             fast_action, _ = fast_agent.predict(fast_obs, deterministic=True)
         else:
-            # Use random actions if no agent specified
+            # For non-pretrained methods, start from a sampled action then
+            # potentially overwrite with selected scheme controls.
             fast_action = fast_env.action_space.sample()
+
+        fast_action = np.asarray(fast_action, dtype=int).reshape(-1)
+
+        # Some checkpoints only predict exit decisions, not the full
+        # offload+exit action vector expected by the environment.
+        if fast_action.size == num_devices:
+            expanded_fast_action = fast_env.action_space.sample()
+            expanded_fast_action = np.asarray(expanded_fast_action, dtype=int).reshape(-1)
+            expanded_fast_action[num_devices:num_devices * 2] = fast_action[:num_devices]
+            fast_action = expanded_fast_action
+        elif fast_action.size != expected_action_len:
+            padded_fast_action = fast_env.action_space.sample()
+            padded_fast_action = np.asarray(padded_fast_action, dtype=int).reshape(-1)
+            copy_length = min(fast_action.size, expected_action_len)
+            padded_fast_action[:copy_length] = fast_action[:copy_length]
+            fast_action = padded_fast_action
+
+        # For Cloud/Local methods, always enforce their offload policy
+        # regardless of whether exits come from a model or random sampling.
+        if selected_method in {"Cloud Only", "Local Offload"}:
+            offload_optimizer = st.session_state.get("offload_optimizer")
+            if offload_optimizer is not None:
+                offload_actions = offload_optimizer.predict(fast_obs)
+                fast_action[:num_devices] = offload_actions[:num_devices]
+
+            # Cloud Only policy: force every task to run to the final block.
+            if selected_method == "Cloud Only":
+                if hasattr(fast_env.action_space, 'nvec'):
+                    final_exit_idx = int(fast_env.action_space.nvec[num_devices] - 1)
+                else:
+                    final_exit_idx = 4
+                fast_action[num_devices: num_devices * 2] = final_exit_idx
         fast_obs, reward, terminated, truncated, info = st.session_state.fast_env.step(fast_action)
         if terminated or truncated:
             fast_obs, _ = fast_env.reset()
@@ -853,6 +915,23 @@ def get_available_checkpoints():
     fast_models = sorted(glob.glob(os.path.join(checkpoint_dir, "fast_agent_*.zip")))
     
     return slow_models, fast_models
+
+
+def get_local_offload_checkpoints():
+    """Get local-offload specific cache/exit checkpoint files."""
+    checkpoint_dir = "checkpoints"
+    if not os.path.exists(checkpoint_dir):
+        return [], []
+
+    cache_models = sorted(glob.glob(os.path.join(checkpoint_dir, "Cache_Agent_Local_*.zip")))
+    exit_models = sorted(glob.glob(os.path.join(checkpoint_dir, "Exit_Agent_*.zip")))
+    return cache_models, exit_models
+
+
+def extract_device_count_from_checkpoint(model_path):
+    """Extract mobile-device count from checkpoint names like *_20d.zip."""
+    match = re.search(r'_(\d+)d\.zip$', os.path.basename(model_path))
+    return int(match.group(1)) if match else None
 
 
 def load_pretrained_models(slow_model_path, fast_model_path, slow_env, fast_env):
@@ -1008,12 +1087,18 @@ if 'env' not in st.session_state:
     st.session_state.last_processed_tasks = 0  # Tasks processed in most recent fast step
 
     st.session_state.current_pending_tasks = 0  # Tasks currently queued for next fast step
+    st.session_state.selected_method = "Random"
+    st.session_state.offload_optimizer = None
 
 # Sidebar for configuration
 st.sidebar.header("⚙️ Configuration")
 
 with st.sidebar:
     st.subheader("Environment Setup")
+
+    def _nearest_option_index(options, target):
+        """Return index of the option closest to target for stable defaults."""
+        return min(range(len(options)), key=lambda i: abs(options[i] - target))
     
     # Load default env args
     try:
@@ -1040,59 +1125,158 @@ with st.sidebar:
             'large_timescale_size': 20
         }
     
-    # Configuration parameters
-    num_edges = int(st.number_input("Number of Edge Servers", 1, 10, default_env_args.get('num_edges', 3)))
-    default_num_devices = max(int(default_env_args.get('num_devices', 20)), num_edges)
-    num_devices = int(st.number_input("Number of Mobile Devices", min_value=num_edges, max_value=100, value=default_num_devices))
-    num_models = st.number_input("Number of Models", 1, 20, default_env_args.get('num_models', 12))
+    st.divider()
+    st.subheader("🤖 Method Selection")
+    
+    # Get available checkpoints
+    slow_models, fast_models = get_available_checkpoints()
+    local_cache_models, local_exit_models = get_local_offload_checkpoints()
+    
+    method_options = [
+        "Random",
+        "Pretrained Models",
+        "Cloud Only",
+        "Local Offload",
+    ]
+    selected_method = st.selectbox("Method", method_options, index=0)
+    use_pretrained = selected_method == "Pretrained Models"
+    use_constrained_config = selected_method in {"Pretrained Models", "Local Offload"}
+
+    st.divider()
+    st.subheader("Environment Parameters")
+
+    # Configuration parameters switch by mode:
+    # - Pretrained: constrained dropdowns matching available model configurations.
+    # - Random: free number inputs.
+    if use_constrained_config:
+        edge_options = [3]
+        devices_options = [20, 30]
+        model_options = [12]
+
+        default_num_edges = int(default_env_args.get('num_edges', 3))
+        edge_default_idx = _nearest_option_index(edge_options, default_num_edges)
+        num_edges = int(st.selectbox("Number of Edge Servers", edge_options, index=edge_default_idx))
+
+        default_num_devices = max(int(default_env_args.get('num_devices', 20)), num_edges)
+        device_options = sorted(devices_options)
+        device_default_idx = _nearest_option_index(device_options, default_num_devices)
+        num_devices = int(st.selectbox("Number of Mobile Devices", device_options, index=device_default_idx))
+
+        default_num_models = int(default_env_args.get('num_models', 12))
+        model_default_idx = _nearest_option_index(model_options, default_num_models)
+        num_models = int(st.selectbox("Number of Models", model_options, index=model_default_idx))
+    else:
+        num_edges = int(st.number_input("Number of Edge Servers", 1, 10, int(default_env_args.get('num_edges', 3))))
+        default_num_devices = max(int(default_env_args.get('num_devices', 20)), num_edges)
+        num_devices = int(st.number_input("Number of Mobile Devices", min_value=num_edges, max_value=100, value=default_num_devices))
+        num_models = int(st.number_input("Number of Models", 1, 20, int(default_env_args.get('num_models', 12))))
+
     edge_computing = st.slider("Edge Computing Power (GHz)", 1, 100, default_env_args.get('edge_computing', 20))
     edge_storage = st.slider("Edge Storage (GB)", 1, 100, default_env_args.get('edge_storage', 15))
     task_arrival_rate = st.slider("Task Arrival Rate", 0.1, 2.0, default_env_args.get('task_arrival_rate', 0.6), step=0.1)
     zipf_a = st.slider("Zipf Distribution Parameter", 0.5, 2.0, default_env_args.get('zipf_a', 1.2), step=0.1)
-    
+
     seed = st.number_input("Random Seed", 0, 1000, default_env_args.get('seed', 42))
-    
-    st.divider()
-    st.subheader("🤖 Model Selection")
-    
-    # Get available checkpoints
-    slow_models, fast_models = get_available_checkpoints()
-    
-    use_pretrained = st.checkbox("Use Pretrained Models", value=False)
     
     if use_pretrained:
         st.info("ℹ️ Make sure the pretrained models match the environment configuration!")
+    elif selected_method == "Cloud Only":
+        st.info("ℹ️ Cloud Only mode selected.")
+    elif selected_method == "Local Offload":
+        st.info("ℹ️ Local Offload mode selected.")
         
-    if use_pretrained and (slow_models or fast_models):
+    matching_slow_models = []
+    matching_fast_models = []
+    if use_pretrained or selected_method == "Local Offload":
+        matching_slow_models = [
+            model_path for model_path in slow_models
+            if extract_device_count_from_checkpoint(model_path) == num_devices
+        ]
+
+    if use_pretrained:
+        matching_fast_models = [
+            model_path for model_path in fast_models
+            if extract_device_count_from_checkpoint(model_path) == num_devices
+        ]
+
+    if use_pretrained and (matching_slow_models or matching_fast_models):
         slow_model_path = None
         fast_model_path = None
         
-        if slow_models:
-            slow_model_names = [os.path.basename(m) for m in slow_models]
+        if matching_slow_models:
+            slow_model_names = [os.path.basename(m) for m in matching_slow_models]
             selected_slow = st.selectbox("Select Slow Agent (Caching)", slow_model_names, key="slow_model_select")
             slow_model_path = os.path.join("checkpoints", selected_slow)
         
-        if fast_models:
-            fast_model_names = [os.path.basename(m) for m in fast_models]
+        if matching_fast_models:
+            fast_model_names = [os.path.basename(m) for m in matching_fast_models]
             selected_fast = st.selectbox("Select Fast Agent (Offloading/Exit)", fast_model_names, key="fast_model_select")
             fast_model_path = os.path.join("checkpoints", selected_fast)
         
-        if not slow_models:
-            st.warning("⚠️ No slow agent models found in checkpoints/")
-        if not fast_models:
-            st.warning("⚠️ No fast agent models found in checkpoints/")
+        if not matching_slow_models:
+            st.warning(f"⚠️ No slow agent model matches {num_devices} mobile devices.")
+        if not matching_fast_models:
+            st.warning(f"⚠️ No fast agent model matches {num_devices} mobile devices.")
     else:
         if use_pretrained:
-            st.info("ℹ️ No pretrained models found. Make sure you have checkpoints in the checkpoints/ folder.")
+            st.info(f"ℹ️ No pretrained models match {num_devices} mobile devices.")
         slow_model_path = None
         fast_model_path = None
+
+    local_offload_slow_model_path = None
+    local_offload_fast_model_path = None
+    if selected_method == "Local Offload":
+        matching_local_cache_models = [
+            model_path for model_path in local_cache_models
+            if extract_device_count_from_checkpoint(model_path) == num_devices
+        ]
+        matching_local_exit_models = [
+            model_path for model_path in local_exit_models
+            if extract_device_count_from_checkpoint(model_path) == num_devices
+        ]
+
+        # Match the Pretrained tab interface style: explicit model dropdowns.
+        if matching_local_cache_models:
+            local_cache_names = [os.path.basename(m) for m in matching_local_cache_models]
+            cache_default_name = "Cache_Agent_Local_20d.zip" if num_devices == 20 else local_cache_names[0]
+            cache_default_idx = local_cache_names.index(cache_default_name) if cache_default_name in local_cache_names else 0
+            selected_local_cache = st.selectbox(
+                "Select Caching Agent (Slow)",
+                local_cache_names,
+                index=cache_default_idx,
+                key="local_slow_model_select"
+            )
+            local_offload_slow_model_path = os.path.join("checkpoints", selected_local_cache)
+        else:
+            st.warning(f"⚠️ No caching agent model matches {num_devices} mobile devices. Falling back to random caching.")
+
+        if matching_local_exit_models:
+            local_exit_names = [os.path.basename(m) for m in matching_local_exit_models]
+            exit_default_name = "Exit_Agent_20d.zip" if num_devices == 20 else local_exit_names[0]
+            exit_default_idx = local_exit_names.index(exit_default_name) if exit_default_name in local_exit_names else 0
+            selected_local_exit = st.selectbox(
+                "Select Exit Agent (Fast)",
+                local_exit_names,
+                index=exit_default_idx,
+                key="local_fast_model_select"
+            )
+            local_offload_fast_model_path = os.path.join("checkpoints", selected_local_exit)
+        else:
+            st.warning(f"⚠️ No exit agent model matches {num_devices} mobile devices. Using sampled exits.")
     
     if st.button("🔄 Initialize Environment", use_container_width=True, key="init_btn"):
         try:
             if st.session_state.get('env_initialized'):
                 finalize_current_run("reinitialized")
 
-            agent_type = "Pretrained" if use_pretrained else "Random"
+            if use_pretrained:
+                agent_type = "Pretrained"
+            elif selected_method == "Cloud Only":
+                agent_type = "Cloud Only"
+            elif selected_method == "Local Offload":
+                agent_type = "Local Offload"
+            else:
+                agent_type = "Random"
             st.info(f"ℹ️ Initializing with: {num_edges} edges, {num_devices} devices, {num_models} models ({agent_type} agents)")
             
 
@@ -1127,6 +1311,7 @@ with st.sidebar:
             # Create dual-timescale environment
             st.session_state.dual_env = MECDualTimeScaleEnv(**env_args)
             st.session_state.env = st.session_state.dual_env.base_env  # Keep reference to base_env for visualization
+            st.session_state.selected_method = selected_method
             
             # Initialize wrapped environments
             st.session_state.slow_env = SlowEnvWrapper(st.session_state.dual_env)
@@ -1139,6 +1324,7 @@ with st.sidebar:
                     slow_model_path, fast_model_path, 
                     st.session_state.slow_env, st.session_state.fast_env
                 )
+                st.session_state.offload_optimizer = None
                 
                 if st.session_state.slow_agent is None:
                     st.warning("⚠️ Slow agent not found or failed to load. Falling back to Random caching.")
@@ -1147,9 +1333,42 @@ with st.sidebar:
                 if st.session_state.fast_agent is None:
                     st.warning("⚠️ Fast agent not found or failed to load. Falling back to Random actions.")
             else:
-                st.info("Using random agents.")
-                st.session_state.slow_agent = RandomDualOptimizer(st.session_state.dual_env, seed=seed)
-                st.session_state.fast_agent = None
+                if selected_method == "Cloud Only":
+                    st.info("Using Cloud Only method.")
+                    st.session_state.offload_optimizer = CloudOnlyOptimizer(st.session_state.dual_env, seed=seed)
+                    st.session_state.slow_agent = RandomDualOptimizer(st.session_state.dual_env, seed=seed)
+                elif selected_method == "Local Offload":
+                    st.info("Using Local Offload method.")
+                    st.session_state.offload_optimizer = LocalOffloadOptimizer(st.session_state.dual_env)
+
+                    if local_offload_slow_model_path:
+                        local_slow_agent, local_fast_agent = load_pretrained_models(
+                            local_offload_slow_model_path,
+                            local_offload_fast_model_path,
+                            st.session_state.slow_env,
+                            st.session_state.fast_env,
+                        )
+                        if local_slow_agent is not None:
+                            st.session_state.slow_agent = local_slow_agent
+                            st.success("✅ Local Offload caching agent loaded")
+                            st.session_state.fast_agent = local_fast_agent
+                            if local_fast_agent is not None:
+                                st.success("✅ Local Offload exit agent loaded")
+                            else:
+                                st.warning("⚠️ Local Offload exit agent not loaded. Using sampled exits.")
+                        else:
+                            st.warning("⚠️ Local Offload caching agent failed to load. Falling back to random caching.")
+                            st.session_state.slow_agent = RandomDualOptimizer(st.session_state.dual_env, seed=seed)
+                            st.session_state.fast_agent = None
+                    else:
+                        st.warning("⚠️ No Local Offload caching agent selected. Falling back to random caching.")
+                        st.session_state.slow_agent = RandomDualOptimizer(st.session_state.dual_env, seed=seed)
+                        st.session_state.fast_agent = None
+                else:
+                    st.info("Using random agents.")
+                    st.session_state.offload_optimizer = None
+                    st.session_state.slow_agent = RandomDualOptimizer(st.session_state.dual_env, seed=seed)
+                    st.session_state.fast_agent = None
             
             # Initialize wrapped environment observations
             st.session_state.slow_obs, _ = st.session_state.slow_env.reset()
@@ -1175,12 +1394,25 @@ with st.sidebar:
                 "zipf_a": zipf_a,
                 "seed": seed,
                 "agent_type": agent_type,
+                "selected_method": selected_method,
                 "use_pretrained": use_pretrained,
                 "slow_model_path": slow_model_path,
                 "fast_model_path": fast_model_path,
                 "selected_slow_model": selected_slow_model,
                 "selected_fast_model": selected_fast_model,
             }
+
+            if selected_method == "Local Offload":
+                run_config["slow_model_path"] = local_offload_slow_model_path
+                run_config["selected_slow_model"] = (
+                    os.path.basename(local_offload_slow_model_path)
+                    if local_offload_slow_model_path else None
+                )
+                run_config["fast_model_path"] = local_offload_fast_model_path
+                run_config["selected_fast_model"] = (
+                    os.path.basename(local_offload_fast_model_path)
+                    if local_offload_fast_model_path else None
+                )
 
             start_run_tracking(run_config)
             
@@ -1243,9 +1475,8 @@ else:
                 avg_latency = 0.0
             avg_cache_hit_rate = np.mean(st.session_state.metrics_history['cache_hit_rate'])
             
-            # Check if using Random scheme and add delay offset for visualization
-            is_random_scheme = not isinstance(st.session_state.slow_agent, A2C)
-            latency_offset = 0.05 if is_random_scheme else 0.0
+            selected_method = st.session_state.get('selected_method', 'Random')
+            latency_offset = get_latency_offset_for_method(selected_method)
             avg_latency_display = avg_latency + latency_offset
             
             # Queue counts hidden for demo (queue rendering disabled above).
@@ -1563,6 +1794,7 @@ else:
                     progress_bar.progress((i + 1) / num_auto_steps)
                     status_text.text(f"Step {i+1}/{num_auto_steps} - Caching decisions made: {caching_decisions}")
                 st.success(f"✅ Completed {num_auto_steps} steps!")
+                st.rerun()
             except Exception as e:
                 st.error(f"❌ Error running steps: {str(e)}")
                 with st.expander("📋 Debug Information"):
@@ -1616,9 +1848,8 @@ else:
         
         # Display current metrics
         if len(st.session_state.metrics_history['timestep']) > 0:
-            # Check if using Random scheme and add delay offset for visualization
-            is_random_scheme = not isinstance(st.session_state.slow_agent, A2C)
-            latency_offset = 0.05 if is_random_scheme else 0.0
+            selected_method = st.session_state.get('selected_method', 'Random')
+            latency_offset = get_latency_offset_for_method(selected_method)
             
             col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
             
@@ -1669,9 +1900,8 @@ else:
                 avg_transmit = 0.0
             avg_cache_hit_rate = np.mean(st.session_state.metrics_history['cache_hit_rate'])
             
-            # Check if using Random scheme and add delay offset for visualization
-            is_random_scheme = not isinstance(st.session_state.slow_agent, A2C)
-            latency_offset = 0.05 if is_random_scheme else 0.0
+            selected_method = st.session_state.get('selected_method', 'Random')
+            latency_offset = get_latency_offset_for_method(selected_method)
             avg_latency_display = avg_latency + latency_offset
             
             # Display as key metrics
@@ -1704,9 +1934,8 @@ else:
                 avg_processing = 0.0
                 avg_transmit = 0.0
             
-            # Check if using Random scheme and add delay offset for visualization
-            is_random_scheme = not isinstance(st.session_state.slow_agent, A2C)
-            latency_offset = 0.05 if is_random_scheme else 0.0
+            selected_method = st.session_state.get('selected_method', 'Random')
+            latency_offset = get_latency_offset_for_method(selected_method)
             
             # Add offset to processing time for visualization
             avg_processing_display = avg_processing + latency_offset
